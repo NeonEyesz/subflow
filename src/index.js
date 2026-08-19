@@ -93,7 +93,6 @@ app.get(['/', '/configure'], (req, res) => {
         <h1>SubFlow</h1>
         <p class="subtitle">Legendas inteligentes em Português (Brasil) e Inglês com sincronização perfeita, anti-anúncios, cache duplo e fallback contínuo.</p>
 
-        <!-- Seletor de Configurações -->
         <div class="config-box">
           <div class="config-title">⚙️ Preferências de Legenda</div>
           
@@ -206,8 +205,10 @@ async function handleSubtitlesRequest(req, res, config = '') {
   if (extra) {
     const pairs = extra.split('&');
     for (const pair of pairs) {
-      const [k, v] = pair.split('=');
-      if (k && v) {
+      const idx = pair.indexOf('=');
+      if (idx !== -1) {
+        const k = pair.substring(0, idx);
+        const v = pair.substring(idx + 1);
         extraParams[decodeURIComponent(k)] = decodeURIComponent(v);
       }
     }
@@ -242,10 +243,11 @@ app.get('/subtitle/:token/:season/:episode.vtt', async (req, res) => {
   const { token } = req.params;
 
   try {
-    const vttData = await resolveAndDownloadSubtitle(decodeURIComponent(token));
+    const vttData = await resolveAndDownloadSubtitle(token);
 
     res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', '*');
     res.setHeader('Cache-Control', 'public, max-age=86400');
     res.send(vttData);
   } catch (err) {

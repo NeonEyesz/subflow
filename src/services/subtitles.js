@@ -19,13 +19,12 @@ function calculateReleaseMatchScore(candidateRelease, targetFilename) {
   let score = 0;
   for (const token of candidateTokens) {
     if (targetTokens.has(token)) {
-      // Tags de alta fidelidade (grupos de release e fontes de vídeo)
       if (['web-dl', 'webrip', 'bluray', 'hdtv', 'remux', 'atvp', 'amzn', 'nf', 'dsnp', 'hbo', 'flux', 'ntb', 'yts', 'rarbg', 'psa', 'fgt', 'reward', 'ctrlhd', 'pia', 'zicamanhd'].includes(token)) {
-        score += 150;
+        score += 200;
       } else if (['2160p', '1080p', '720p', '4k', 'hdr', 'x264', 'x265', 'hevc'].includes(token)) {
-        score += 80;
+        score += 100;
       } else {
-        score += 20;
+        score += 30;
       }
     }
   }
@@ -94,7 +93,7 @@ function parseUserConfig(configStr) {
 }
 
 /**
- * Busca e seleciona as melhores legendas
+ * Busca e seleciona as melhores legendas gerando tokens compactos
  */
 async function getSubtitles({ type, id, extra = {}, config = '' }) {
   let imdbId = id;
@@ -137,34 +136,29 @@ async function getSubtitles({ type, id, extra = {}, config = '' }) {
     let ptCandidates = allCandidates.filter(c => c.language === 'pob');
 
     let isFallback = false;
+    let targetLangCode = 'pt-br';
+
     if (ptCandidates.length === 0 && userConfig.fallbackPtPt) {
       ptCandidates = allCandidates.filter(c => c.language === 'por');
       isFallback = ptCandidates.length > 0;
+      targetLangCode = 'pt-pt';
     }
 
     if (ptCandidates.length > 0) {
-      const rankedPt = rankCandidates(ptCandidates, queryParams).slice(0, 10);
-      const topPt = rankedPt.map((cand, idx) => ({
-        sourceKey: cand.sourceKey,
-        providerId: cand.providerId,
-        downloadUrl: cand.downloadUrl,
-        releaseName: cand.releaseName,
-        cleanAds: userConfig.cleanAds,
-        ranking: idx + 1
-      }));
-
-      const ptPayload = {
-        candidatos: topPt,
-        cacheKey: `subflow-pt-${id}-${extra.videoHash || extra.filename || 'default'}`,
-        release: topPt.map(c => c.releaseName).filter(Boolean),
-        cleanAds: userConfig.cleanAds,
-        fallback: null
+      const rankedPt = rankCandidates(ptCandidates, queryParams).slice(0, 6);
+      
+      // Token compacto: apenas sub_id e nome resumido para não estourar limite de URL em Smart TVs/Nuvio
+      const compactPayload = {
+        c: rankedPt.map(c => [c.subId || c.providerId, (c.releaseName || '').substring(0, 50)]),
+        k: `subflow-pt-${id}-${extra.videoHash || extra.filename || 'default'}`,
+        l: targetLangCode,
+        a: userConfig.cleanAds
       };
 
-      const ptToken = Buffer.from(JSON.stringify(ptPayload)).toString('base64');
+      const ptToken = Buffer.from(JSON.stringify(compactPayload)).toString('base64url');
       results.push({
-        id: `subflow-pt-${ptToken.substring(0, 16)}`,
-        url: `/subtitle/${encodeURIComponent(ptToken)}/${seasonParam}/${episodeParam}.vtt`,
+        id: `subflow-pt-${id}`,
+        url: `/subtitle/${ptToken}/${seasonParam}/${episodeParam}.vtt`,
         lang: 'pob',
         label: isFallback ? 'SubFlow [Português - Fallback]' : 'SubFlow [PT-BR Automático]'
       });
@@ -175,80 +169,47 @@ async function getSubtitles({ type, id, extra = {}, config = '' }) {
   if (userConfig.enableEnglish) {
     const enCandidates = allCandidates.filter(c => c.language === 'eng');
     if (enCandidates.length > 0) {
-      const rankedEn = rankCandidates(enCandidates, queryParams).slice(0, 10);
-      const topEn = rankedEn.map((cand, idx) => ({
-        sourceKey: cand.sourceKey,
-        providerId: cand.providerId,
-        downloadUrl: cand.downloadUrl,
-        releaseName: cand.releaseName,
-        cleanAds: userConfig.cleanAds,
-        ranking: idx + 1
-      }));
+      const rankedEn = rankCandidates(enCandidates, queryParams).slice(0, 6);
 
-      const enPayload = {
-        candidatos: topEn,
-        cacheKey: `subflow-en-${id}-${extra.videoHash || extra.filename || 'default'}`,
-        release: topEn.map(c => c.releaseName).filter(Boolean),
-        cleanAds: userConfig.cleanAds,
-        fallback: null
+      const compactPayload = {
+        c: rankedEn.map(c => [c.subId || c.providerId, (c.releaseName || '').substring(0, 50)]),
+        k: `subflow-en-${id}-${extra.videoHash || extra.filename || 'default'}`,
+        l: 'en',
+        a: userConfig.cleanAds
       };
 
-      const enToken = Buffer.from(JSON.stringify(enPayload)).toString('base64');
+      const enToken = Buffer.from(JSON.stringify(compactPayload)).toString('base64url');
       results.push({
-        id: `subflow-en-${enToken.substring(0, 16)}`,
-        url: `/subtitle/${encodeURIComponent(enToken)}/${seasonParam}/${episodeParam}.vtt`,
+        id: `subflow-en-${id}`,
+        url: `/subtitle/${enToken}/${seasonParam}/${episodeParam}.vtt`,
         lang: 'eng',
         label: 'SubFlow [English Sync]'
       });
     }
   }
 
-  // 3. Faixa de Legendas Forçadas
-  const forcedCandidates = allCandidates.filter(c => c.isForced);
-  if (forcedCandidates.length > 0) {
-    const rankedForced = rankCandidates(forcedCandidates, queryParams).slice(0, 4);
-    const topForced = rankedForced.map((cand, idx) => ({
-      sourceKey: cand.sourceKey,
-      providerId: cand.providerId,
-      downloadUrl: cand.downloadUrl,
-      releaseName: cand.releaseName,
-      cleanAds: userConfig.cleanAds,
-      ranking: idx + 1
-    }));
-
-    const forcedPayload = {
-      candidatos: topForced,
-      cacheKey: `subflow-forced-${id}-${extra.videoHash || extra.filename || 'default'}`,
-      release: topForced.map(c => c.releaseName).filter(Boolean),
-      cleanAds: userConfig.cleanAds,
-      fallback: null
-    };
-
-    const forcedToken = Buffer.from(JSON.stringify(forcedPayload)).toString('base64');
-    results.push({
-      id: `subflow-forced-${forcedToken.substring(0, 16)}`,
-      url: `/subtitle/${encodeURIComponent(forcedToken)}/${seasonParam}/${episodeParam}.vtt`,
-      lang: 'pob',
-      label: 'SubFlow [PT-BR Forçada / Trechos Estrangeiros]'
-    });
-  }
-
   return results;
 }
 
 /**
- * Tenta baixar a legenda do melhor candidato com fallback automático
+ * Baixa a legenda do melhor candidato com fallback automático
  */
 async function resolveAndDownloadSubtitle(token) {
   let payload;
   try {
-    const jsonStr = Buffer.from(token, 'base64').toString('utf-8');
+    const jsonStr = Buffer.from(token, 'base64url').toString('utf-8');
     payload = JSON.parse(jsonStr);
   } catch (err) {
-    throw new Error('Token de legenda inválido');
+    // Tenta fallback com base64 padrão
+    try {
+      const jsonStr = Buffer.from(token, 'base64').toString('utf-8');
+      payload = JSON.parse(jsonStr);
+    } catch (e) {
+      throw new Error('Token de legenda inválido');
+    }
   }
 
-  const { candidatos, cacheKey, cleanAds = true } = payload;
+  const { c: candidatesList, k: cacheKey, l: langCode = 'pt-br', a: cleanAds = true } = payload;
 
   if (cacheKey && cache.has(cacheKey)) {
     const cachedVtt = cache.get(cacheKey);
@@ -258,21 +219,27 @@ async function resolveAndDownloadSubtitle(token) {
     }
   }
 
-  if (!candidatos || candidatos.length === 0) {
+  if (!candidatesList || candidatesList.length === 0) {
     throw new Error('Nenhum candidato de legenda disponível');
   }
 
   let lastError = null;
 
-  for (let i = 0; i < candidatos.length; i++) {
-    const candidate = candidatos[i];
-    console.log(`[SubFlow] Tentando baixar candidato #${i + 1}: ${candidate.releaseName || candidate.providerId}`);
+  for (let i = 0; i < candidatesList.length; i++) {
+    const [subId, releaseName] = candidatesList[i];
+    console.log(`[SubFlow] Tentando baixar candidato #${i + 1}: ID ${subId} (${releaseName})`);
+
+    const candidate = {
+      downloadUrl: `https://opensubtitles.stremio.homes/sub.vtt/?lang_code=${langCode}&sub_id=${subId}`,
+      releaseName: releaseName,
+      providerId: subId
+    };
 
     try {
       const vttContent = await downloadSubtitle(candidate, cleanAds);
 
       if (vttContent && vttContent.includes('WEBVTT')) {
-        console.log(`[SubFlow] Sucesso no candidato #${i + 1} (${candidate.releaseName})! Gravando em cache...`);
+        console.log(`[SubFlow] Sucesso no candidato #${i + 1} (${releaseName})! Gravando em cache...`);
         if (cacheKey) {
           cache.set(cacheKey, vttContent);
         }
@@ -284,7 +251,7 @@ async function resolveAndDownloadSubtitle(token) {
     }
   }
 
-  throw new Error(`Todos os ${candidatos.length} candidatos falharam: ${lastError ? lastError.message : 'desconhecido'}`);
+  throw new Error(`Todos os ${candidatesList.length} candidatos falharam: ${lastError ? lastError.message : 'desconhecido'}`);
 }
 
 module.exports = {
