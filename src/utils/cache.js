@@ -17,9 +17,12 @@ class SubtitleCache {
       }
     }
 
-    // Executa limpeza periódica do cache em disco a cada 12 horas
+    // Executa limpeza periódica do cache a cada 12 horas sem prender o event loop do Node
     this.runGarbageCollection();
-    setInterval(() => this.runGarbageCollection(), 12 * 60 * 60 * 1000);
+    const gcInterval = setInterval(() => this.runGarbageCollection(), 12 * 60 * 60 * 1000);
+    if (gcInterval && typeof gcInterval.unref === 'function') {
+      gcInterval.unref();
+    }
   }
 
   getHashKey(key) {

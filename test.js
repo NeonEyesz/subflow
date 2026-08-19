@@ -32,6 +32,7 @@ async function runTests() {
   }
 
   console.log('\n✅ TODOS OS TESTES PASSARAM COM SUCESSO!');
+  process.exit(0);
 }
 
 runTests();
