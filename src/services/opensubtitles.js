@@ -1,0 +1,201 @@
+const axios = require('axios');
+const zlib = require('zlib');
+const { bufferToUtf8, srtToVtt } = require('../utils/converter');
+
+const OPENSUBTITLES_V3_BASE = 'https://opensubtitles-v3.strem.io';
+const OPENSUBTITLES_API_URL = process.env.OPENSUBTITLES_API_URL || 'https://api.opensubtitles.com/api/v1';
+const OPENSUBTITLES_API_KEY = process.env.OPENSUBTITLES_API_KEY || '';
+const USER_AGENT = process.env.OPENSUBTITLES_USER_AGENT || 'SyncSubs v1.0.0';
+
+/**
+ * Busca legendas via OpenSubtitles v3 (serviço rápido e sem necessidade de API key)
+ */
+async function searchOpenSubtitlesV3({ type, id, extra = {} }) {
+  try {
+    let extraPath = '';
+    const extraParams = [];
+
+    if (extra.videoHash) extraParams.push(`videoHash=${encodeURIComponent(extra.videoHash)}`);
+    if (extra.videoSize) extraParams.push(`videoSize=${encodeURIComponent(extra.videoSize)}`);
+    if (extra.filename) extraParams.push(`filename=${encodeURIComponent(extra.filename)}`);
+
+    if (extraParams.length > 0) {
+      extraPath = `/${extraParams.join('&')}`;
+    }
+
+    const url = `${OPENSUBTITLES_V3_BASE}/subtitles/${type}/${id}${extraPath}.json`;
+
+    const response = await axios.get(url, {
+      timeout: 8000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      }
+    });
+
+    if (!response.data || !Array.isArray(response.data.subtitles)) {
+      return [];
+    }
+
+    // Filtra e mapeia legendas em Português do Brasil (pob) ou Português (por)
+    const ptSubs = response.data.subtitles.filter(sub => {
+      const l = (sub.lang || '').toLowerCase();
+      return l === 'pob' || l === 'por' || l === 'pt-br' || l === 'pt';
+    });
+
+    return ptSubs.map((sub, index) => {
+      const isPtBr = sub.lang === 'pob' || sub.lang === 'pt-br';
+      return {
+        sourceKey: 'opensubtitlesv3plus',
+        providerId: sub.id || `v3-${index}`,
+        downloadUrl: sub.url,
+        fileId: sub.id,
+        releaseName: extra.filename || `OpenSubtitles-${sub.id}`,
+        language: isPtBr ? 'pob' : 'por',
+        isPtBr: isPtBr,
+        ratings: 5,
+        votes: 10,
+        downloads: 100,
+        subEncoding: sub.SubEncoding || 'UTF-8',
+        fromHashMatch: !!extra.videoHash
+      };
+    });
+  } catch (err) {
+    console.warn('[OpenSubtitles v3] Erro na busca:', err.message);
+    return [];
+  }
+}
+
+/**
+ * Busca legendas no OpenSubtitles REST API oficial (se API key configurada)
+ */
+async function searchOpenSubtitlesRest({ imdbId, season, episode, moviehash, bytesize, filename }) {
+  if (!OPENSUBTITLES_API_KEY) {
+    return [];
+  }
+
+  try {
+    const params = {
+      languages: 'pt-br,pob,por',
+      order_by: 'download_count',
+      order_direction: 'desc'
+    };
+
+    if (imdbId) {
+      params.imdb_id = imdbId.replace(/^tt/, '');
+    }
+    if (season !== undefined && season !== null) {
+      params.season_number = season;
+    }
+    if (episode !== undefined && episode !== null) {
+      params.episode_number = episode;
+    }
+    if (moviehash) {
+      params.moviehash = moviehash;
+    }
+    if (bytesize) {
+      params.moviebytesize = bytesize;
+    }
+    if (filename) {
+      params.query = filename;
+    }
+
+    const response = await axios.get(`${OPENSUBTITLES_API_URL}/subtitles`, {
+      params,
+      headers: {
+        'User-Agent': USER_AGENT,
+        'Api-Key': OPENSUBTITLES_API_KEY,
+        'Accept': 'application/json'
+      },
+      timeout: 8000
+    });
+
+    if (!response.data || !response.data.data) {
+      return [];
+    }
+
+    return response.data.data.map(item => {
+      const attributes = item.attributes || {};
+      const files = attributes.files || [];
+      const fileId = files[0]?.file_id;
+      const releaseName = attributes.release || attributes.feature_details?.movie_name || '';
+      const language = (attributes.language || '').toLowerCase();
+      const isPtBr = language === 'pt-br' || language === 'pob';
+
+      return {
+        sourceKey: 'opensubtitles_rest',
+        providerId: item.id || fileId,
+        fileId: fileId,
+        downloadUrl: attributes.url || null,
+        releaseName: releaseName,
+        language: isPtBr ? 'pob' : 'por',
+        isPtBr: isPtBr,
+        ratings: attributes.ratings || 0,
+        votes: attributes.votes || 0,
+        downloads: attributes.download_count || 0,
+        fromHashMatch: attributes.moviehash_match || false
+      };
+    });
+  } catch (err) {
+    console.warn('[OpenSubtitles REST] Erro ao buscar:', err.message);
+    return [];
+  }
+}
+
+/**
+ * Faz download do arquivo de legenda e converte para WebVTT UTF-8 limpo
+ */
+async function downloadOpenSubtitle(candidate) {
+  try {
+    let fileUrl = candidate.downloadUrl;
+
+    if (!fileUrl && candidate.fileId && OPENSUBTITLES_API_KEY) {
+      const dlRes = await axios.post(
+        `${OPENSUBTITLES_API_URL}/download`,
+        { file_id: candidate.fileId },
+        {
+          headers: {
+            'User-Agent': USER_AGENT,
+            'Api-Key': OPENSUBTITLES_API_KEY,
+            'Accept': 'application/json'
+          },
+          timeout: 8000
+        }
+      );
+
+      if (dlRes.data && dlRes.data.link) {
+        fileUrl = dlRes.data.link;
+      }
+    }
+
+    if (!fileUrl) {
+      throw new Error('Nenhum link de download disponível para esta legenda');
+    }
+
+    const fileRes = await axios.get(fileUrl, {
+      responseType: 'arraybuffer',
+      timeout: 10000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+      }
+    });
+
+    let buffer = Buffer.from(fileRes.data);
+
+    // Se for gzip comprimido (magic bytes 0x1f 0x8b)
+    if (buffer.length > 2 && buffer[0] === 0x1f && buffer[1] === 0x8b) {
+      buffer = zlib.gunzipSync(buffer);
+    }
+
+    const utf8Content = bufferToUtf8(buffer);
+    return srtToVtt(utf8Content);
+  } catch (err) {
+    console.error(`[OpenSubtitles] Falha ao baixar legenda ${candidate.fileId || candidate.providerId}:`, err.message);
+    throw err;
+  }
+}
+
+module.exports = {
+  searchOpenSubtitlesV3,
+  searchOpenSubtitlesRest,
+  downloadOpenSubtitle
+};
