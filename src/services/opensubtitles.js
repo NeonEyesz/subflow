@@ -5,10 +5,10 @@ const { bufferToUtf8, srtToVtt } = require('../utils/converter');
 const OPENSUBTITLES_V3_BASE = 'https://opensubtitles-v3.strem.io';
 const OPENSUBTITLES_API_URL = process.env.OPENSUBTITLES_API_URL || 'https://api.opensubtitles.com/api/v1';
 const OPENSUBTITLES_API_KEY = process.env.OPENSUBTITLES_API_KEY || '';
-const USER_AGENT = process.env.OPENSUBTITLES_USER_AGENT || 'SyncSubs v1.0.0';
+const USER_AGENT = process.env.OPENSUBTITLES_USER_AGENT || 'SubFlow v1.2.0';
 
 /**
- * Busca legendas via OpenSubtitles v3 (rápido, sem limites, sem API key necessária)
+ * Busca legendas via OpenSubtitles v3
  */
 async function searchOpenSubtitlesV3({ type, id, extra = {} }) {
   try {
@@ -75,7 +75,7 @@ async function searchOpenSubtitlesV3({ type, id, extra = {} }) {
 }
 
 /**
- * Busca legendas no OpenSubtitles REST API oficial (se API key configurada)
+ * Busca legendas no OpenSubtitles REST API oficial
  */
 async function searchOpenSubtitlesRest({ imdbId, season, episode, moviehash, bytesize, filename }) {
   if (!OPENSUBTITLES_API_KEY) {
@@ -197,7 +197,6 @@ async function downloadOpenSubtitle(candidate, cleanAds = true) {
 
     let buffer = Buffer.from(fileRes.data);
 
-    // Se for gzip comprimido
     if (buffer.length > 2 && buffer[0] === 0x1f && buffer[1] === 0x8b) {
       buffer = zlib.gunzipSync(buffer);
     }

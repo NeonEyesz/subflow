@@ -1,6 +1,8 @@
-# 🎬 SyncSubs Enhanced (Stremio & Nuvio Addon)
+# 🌊 SubFlow (Stremio & Nuvio Addon)
 
-Addon de alta performance para **Stremio** e **Nuvio** com seleção inteligente de legendas em **Português do Brasil (PT-BR)** e **Inglês (English)**, sincronização automática via VideoHash, higienização anti-anúncios, cache duplo (RAM + Disco) e fallback automático.
+Addon independente de alta performance para **Stremio** e **Nuvio** com seleção inteligente de legendas em **Português do Brasil (PT-BR)** e **Inglês (English)**, sincronização automática via VideoHash, higienização anti-anúncios, cache duplo (RAM + Disco) e fallback automático.
+
+Desenvolvido por **Azthe**.
 
 ---
 
@@ -22,7 +24,7 @@ Addon de alta performance para **Stremio** e **Nuvio** com seleção inteligente
 ## 🚀 Como Usar Localmente (Windows / Linux / Mac)
 
 ### 1. Iniciar o Servidor:
-No terminal da pasta `syncsubs`:
+No terminal da pasta do projeto:
 ```bash
 npm start
 ```
@@ -48,17 +50,17 @@ O addon estará rodando em `http://localhost:7000`.
 
 ## ☁️ Como Fazer Deploy Gratuito na Nuvem (24/7)
 
-Para deixar o addon online 24 horas por dia em qualquer TV, celular ou PC:
+Para deixar o **SubFlow** online 24 horas por dia em qualquer TV, celular ou PC:
 
 ### Opção 1: [Render.com](https://render.com) (100% Gratuito)
 1. Crie um repositório no seu GitHub e envie esta pasta:
    ```bash
-   git remote add origin https://github.com/SEU_USUARIO/syncsubs.git
+   git remote add origin https://github.com/SEU_USUARIO/subflow.git
    git push -u origin main
    ```
 2. No Render, crie um **Web Service** conectado ao seu GitHub.
 3. Use o comando de build `npm install` e start `npm start`.
-4. Adicione o link gerado (`https://seu-addon.onrender.com/manifest.json`) no Stremio e Nuvio.
+4. Adicione o link gerado (`https://seu-subflow.onrender.com/manifest.json`) no Stremio e Nuvio.
 
 ### Opção 2: [Railway.app](https://railway.app)
 1. Suba o repositório no Railway.

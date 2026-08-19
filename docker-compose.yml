@@ -1,9 +1,9 @@
 version: '3.8'
 
 services:
-  syncsubs:
+  subflow:
     build: .
-    container_name: syncsubs-addon
+    container_name: subflow-addon
     restart: unless-stopped
     ports:
       - "7000:7000"

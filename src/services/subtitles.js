@@ -4,7 +4,6 @@ const cache = require('../utils/cache');
 
 /**
  * Normaliza e calcula similaridade entre a release do arquivo de vídeo e o título da legenda.
- * Trata tags de animes (ex: [Erai-raws], [HorribleSubs]), grupos de cena e resoluções.
  */
 function calculateReleaseMatchScore(candidateRelease, targetFilename) {
   if (!candidateRelease || !targetFilename) return 0;
@@ -21,7 +20,6 @@ function calculateReleaseMatchScore(candidateRelease, targetFilename) {
   let matches = 0;
   for (const token of candidateTokens) {
     if (targetTokens.has(token)) {
-      // Tags de qualidade e grupo de release valem mais pontos
       if (['1080p', '2160p', '4k', 'bluray', 'web-dl', 'yts', 'rarbg', 'psa'].includes(token)) {
         matches += 3;
       } else {
@@ -122,7 +120,7 @@ async function getSubtitles({ type, id, extra = {}, config = '' }) {
     extra
   };
 
-  // Executa buscas em paralelo nos múltiplos provedores
+  // Executa buscas em paralelo
   const [openSubV3Results, openSubRestResults, subdlResults] = await Promise.all([
     searchOpenSubtitlesV3(queryParams),
     searchOpenSubtitlesRest(queryParams),
@@ -143,7 +141,6 @@ async function getSubtitles({ type, id, extra = {}, config = '' }) {
   if (userConfig.enablePtBr) {
     let ptCandidates = allCandidates.filter(c => c.language === 'pob');
 
-    // Se não houver PT-BR e o fallback para PT-PT estiver ativo
     let isFallback = false;
     if (ptCandidates.length === 0 && userConfig.fallbackPtPt) {
       ptCandidates = allCandidates.filter(c => c.language === 'por');
@@ -164,7 +161,7 @@ async function getSubtitles({ type, id, extra = {}, config = '' }) {
 
       const ptPayload = {
         candidatos: topPt,
-        cacheKey: `sub-pt-${id}-${extra.videoHash || 'nohash'}`,
+        cacheKey: `subflow-pt-${id}-${extra.videoHash || 'nohash'}`,
         release: topPt.map(c => c.releaseName).filter(Boolean),
         cleanAds: userConfig.cleanAds,
         fallback: null
@@ -172,10 +169,10 @@ async function getSubtitles({ type, id, extra = {}, config = '' }) {
 
       const ptToken = Buffer.from(JSON.stringify(ptPayload)).toString('base64');
       results.push({
-        id: `syncsubs-pt-${ptToken.substring(0, 16)}`,
+        id: `subflow-pt-${ptToken.substring(0, 16)}`,
         url: `/subtitle/${encodeURIComponent(ptToken)}/${seasonParam}/${episodeParam}.vtt`,
         lang: 'pob',
-        label: isFallback ? 'SyncSubs [Português - Fallback]' : 'SyncSubs [PT-BR Automático]'
+        label: isFallback ? 'SubFlow [Português - Fallback]' : 'SubFlow [PT-BR Automático]'
       });
     }
   }
@@ -197,7 +194,7 @@ async function getSubtitles({ type, id, extra = {}, config = '' }) {
 
       const enPayload = {
         candidatos: topEn,
-        cacheKey: `sub-en-${id}-${extra.videoHash || 'nohash'}`,
+        cacheKey: `subflow-en-${id}-${extra.videoHash || 'nohash'}`,
         release: topEn.map(c => c.releaseName).filter(Boolean),
         cleanAds: userConfig.cleanAds,
         fallback: null
@@ -205,15 +202,15 @@ async function getSubtitles({ type, id, extra = {}, config = '' }) {
 
       const enToken = Buffer.from(JSON.stringify(enPayload)).toString('base64');
       results.push({
-        id: `syncsubs-en-${enToken.substring(0, 16)}`,
+        id: `subflow-en-${enToken.substring(0, 16)}`,
         url: `/subtitle/${encodeURIComponent(enToken)}/${seasonParam}/${episodeParam}.vtt`,
         lang: 'eng',
-        label: 'SyncSubs [English Sync]'
+        label: 'SubFlow [English Sync]'
       });
     }
   }
 
-  // 3. Faixa de Legendas Forçadas (Forced Subtitles / Trechos Estrangeiros) se detectada
+  // 3. Faixa de Legendas Forçadas (Forced Subtitles) se detectada
   const forcedCandidates = allCandidates.filter(c => c.isForced);
   if (forcedCandidates.length > 0) {
     const rankedForced = rankCandidates(forcedCandidates, queryParams).slice(0, 4);
@@ -229,7 +226,7 @@ async function getSubtitles({ type, id, extra = {}, config = '' }) {
 
     const forcedPayload = {
       candidatos: topForced,
-      cacheKey: `sub-forced-${id}-${extra.videoHash || 'nohash'}`,
+      cacheKey: `subflow-forced-${id}-${extra.videoHash || 'nohash'}`,
       release: topForced.map(c => c.releaseName).filter(Boolean),
       cleanAds: userConfig.cleanAds,
       fallback: null
@@ -237,10 +234,10 @@ async function getSubtitles({ type, id, extra = {}, config = '' }) {
 
     const forcedToken = Buffer.from(JSON.stringify(forcedPayload)).toString('base64');
     results.push({
-      id: `syncsubs-forced-${forcedToken.substring(0, 16)}`,
+      id: `subflow-forced-${forcedToken.substring(0, 16)}`,
       url: `/subtitle/${encodeURIComponent(forcedToken)}/${seasonParam}/${episodeParam}.vtt`,
       lang: 'pob',
-      label: 'SyncSubs [PT-BR Forçada / Trechos Estrangeiros]'
+      label: 'SubFlow [PT-BR Forçada / Trechos Estrangeiros]'
     });
   }
 
@@ -276,10 +273,10 @@ async function resolveAndDownloadSubtitle(token) {
 
   let lastError = null;
 
-  // 2. Loop de Fallback Automático (tenta candidato 0, 1, 2...)
+  // 2. Loop de Fallback Automático
   for (let i = 0; i < candidatos.length; i++) {
     const candidate = candidatos[i];
-    console.log(`[SyncSubs] Tentando baixar candidato #${i + 1} (${candidate.sourceKey} - ${candidate.releaseName || candidate.providerId})`);
+    console.log(`[SubFlow] Tentando baixar candidato #${i + 1} (${candidate.sourceKey} - ${candidate.releaseName || candidate.providerId})`);
 
     try {
       let vttContent = null;
@@ -291,14 +288,14 @@ async function resolveAndDownloadSubtitle(token) {
       }
 
       if (vttContent && vttContent.includes('WEBVTT')) {
-        console.log(`[SyncSubs] Sucesso no candidato #${i + 1}! Gravando em cache...`);
+        console.log(`[SubFlow] Sucesso no candidato #${i + 1}! Gravando em cache...`);
         if (cacheKey) {
           cache.set(cacheKey, vttContent);
         }
         return vttContent;
       }
     } catch (err) {
-      console.warn(`[SyncSubs] Falha no candidato #${i + 1}: ${err.message}. Tentando próximo...`);
+      console.warn(`[SubFlow] Falha no candidato #${i + 1}: ${err.message}. Tentando próximo...`);
       lastError = err;
     }
   }

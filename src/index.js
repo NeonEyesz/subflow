@@ -12,11 +12,11 @@ app.use(cors());
 app.use(express.json());
 
 const BASE_MANIFEST = {
-  id: 'com.syncsubs.custom',
+  id: 'com.azthe.subflow',
   version: '1.2.0',
-  name: 'SyncSubs',
-  description: 'Legendas automáticas PT-BR & Inglês para Stremio/Nuvio com seleção inteligente, anti-anúncios, cache duplo e fallback.',
-  logo: 'https://syncsubs-production.up.railway.app/syncsubs-logo.png',
+  name: 'SubFlow',
+  description: 'Legendas inteligentes PT-BR & Inglês para Stremio e Nuvio com seleção por VideoHash, anti-anúncios, cache duplo e fallback.',
+  logo: 'https://raw.githubusercontent.com/Stremio/stremio-addon-sdk/master/logo.png',
   resources: ['subtitles'],
   types: ['movie', 'series'],
   catalogs: [],
@@ -36,69 +36,71 @@ app.get(['/', '/configure'], (req, res) => {
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>SyncSubs - Legendas PT-BR & Inglês para Stremio & Nuvio</title>
-      <link rel="icon" href="${BASE_MANIFEST.logo}">
+      <title>SubFlow - Legendas Inteligentes para Stremio & Nuvio</title>
       <style>
         :root {
-          --primary: #8b5cf6;
-          --primary-hover: #7c3aed;
-          --bg: #0b1120;
-          --card-bg: #1e293b;
+          --primary: #06b6d4;
+          --primary-hover: #0891b2;
+          --primary-glow: rgba(6, 182, 212, 0.4);
+          --bg: #070d18;
+          --card-bg: #0f172a;
           --text: #f8fafc;
           --text-muted: #94a3b8;
-          --border: #334155;
-          --success: #22c55e;
+          --border: #1e293b;
+          --success: #10b981;
           --accent: #38bdf8;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
         body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; }
-        .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 20px; padding: 36px; max-width: 680px; width: 100%; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7); text-align: center; }
-        .logo { width: 90px; height: 90px; border-radius: 18px; margin-bottom: 18px; box-shadow: 0 10px 25px -5px rgba(139, 92, 246, 0.4); }
-        h1 { font-size: 30px; margin-bottom: 8px; font-weight: 800; background: linear-gradient(135deg, #fff 40%, var(--primary)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 24px; padding: 36px; max-width: 680px; width: 100%; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.8); text-align: center; position: relative; overflow: hidden; }
+        .card::before { content: ""; position: absolute; top: -50%; left: -50%; width: 200%; height: 200%; background: radial-gradient(circle, var(--primary-glow) 0%, transparent 60%); opacity: 0.15; pointer-events: none; }
+        
+        .logo-badge { display: inline-flex; align-items: center; justify-content: center; width: 80px; height: 80px; border-radius: 20px; background: linear-gradient(135deg, #06b6d4, #3b82f6); margin-bottom: 18px; font-size: 38px; box-shadow: 0 10px 25px -5px var(--primary-glow); }
+        h1 { font-size: 32px; margin-bottom: 8px; font-weight: 800; background: linear-gradient(135deg, #ffffff 50%, var(--primary)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
         p.subtitle { color: var(--text-muted); font-size: 14.5px; line-height: 1.6; margin-bottom: 24px; }
         
-        .config-box { background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border); border-radius: 14px; padding: 20px; text-align: left; margin-bottom: 24px; }
+        .config-box { background: rgba(7, 13, 24, 0.7); border: 1px solid var(--border); border-radius: 16px; padding: 20px; text-align: left; margin-bottom: 24px; }
         .config-title { font-size: 15px; font-weight: 700; margin-bottom: 14px; color: var(--accent); display: flex; align-items: center; gap: 8px; }
-        .toggle-item { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid rgba(51, 65, 85, 0.5); }
+        .toggle-item { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid rgba(30, 41, 59, 0.6); }
         .toggle-item:last-child { border-bottom: none; }
         .toggle-label { font-size: 14px; font-weight: 500; }
         .toggle-desc { font-size: 12px; color: var(--text-muted); }
         
         .switch { position: relative; display: inline-block; width: 44px; height: 24px; }
         .switch input { opacity: 0; width: 0; height: 0; }
-        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #475569; transition: .3s; border-radius: 24px; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #334155; transition: .3s; border-radius: 24px; }
         .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .3s; border-radius: 50%; }
         input:checked + .slider { background-color: var(--primary); }
         input:checked + .slider:before { transform: translateX(20px); }
 
         .btn-group { display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px; }
         .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 14px 24px; border-radius: 12px; font-weight: 600; font-size: 16px; text-decoration: none; transition: all 0.2s; cursor: pointer; border: none; }
-        .btn-primary { background: var(--primary); color: white; }
-        .btn-primary:hover { background: var(--primary-hover); transform: translateY(-2px); }
-        .btn-secondary { background: #334155; color: var(--text); }
-        .btn-secondary:hover { background: #475569; }
+        .btn-primary { background: linear-gradient(135deg, var(--primary), #3b82f6); color: white; box-shadow: 0 10px 20px -5px var(--primary-glow); }
+        .btn-primary:hover { transform: translateY(-2px); filter: brightness(1.1); }
+        .btn-secondary { background: #1e293b; color: var(--text); }
+        .btn-secondary:hover { background: #334155; }
         
-        .url-box { background: #070d18; border: 1px solid var(--border); padding: 12px 16px; border-radius: 10px; font-family: monospace; font-size: 13px; color: var(--accent); word-break: break-all; margin-top: 10px; }
+        .url-box { background: #030712; border: 1px solid var(--border); padding: 12px 16px; border-radius: 10px; font-family: monospace; font-size: 13px; color: var(--accent); word-break: break-all; margin-top: 10px; }
         .toast { display: none; margin-top: 10px; color: var(--success); font-size: 14px; font-weight: 500; }
         
-        .stats-bar { display: flex; justify-content: space-around; background: rgba(30, 41, 59, 0.8); border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-top: 24px; font-size: 12.5px; color: var(--text-muted); }
+        .stats-bar { display: flex; justify-content: space-around; background: rgba(15, 23, 42, 0.9); border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-top: 24px; font-size: 12px; color: var(--text-muted); }
         .stats-item span { color: var(--text); font-weight: bold; }
       </style>
     </head>
     <body>
       <div class="card">
-        <img class="logo" src="${BASE_MANIFEST.logo}" alt="SyncSubs" onerror="this.src='https://stremio-addons.net/img/web-app-manifest-512x512.png'" />
-        <h1>SyncSubs Enhanced</h1>
-        <p class="subtitle">Legendas automáticas com seleção inteligente, suporte simultâneo a PT-BR e Inglês, anti-anúncios, cache duplo e fallback.</p>
+        <div class="logo-badge">🌊</div>
+        <h1>SubFlow</h1>
+        <p class="subtitle">Legendas inteligentes em Português (Brasil) e Inglês com sincronização perfeita, anti-anúncios, cache duplo e fallback contínuo.</p>
 
         <!-- Seletor de Configurações -->
         <div class="config-box">
-          <div class="config-title">⚙️ Configurações de Legenda</div>
+          <div class="config-title">⚙️ Preferências de Legenda</div>
           
           <div class="toggle-item">
             <div>
               <div class="toggle-label">🇧🇷 Legendas em Português (PT-BR)</div>
-              <div class="toggle-desc">Prioridade absoluta para Português do Brasil</div>
+              <div class="toggle-desc">Prioridade automática para Português do Brasil</div>
             </div>
             <label class="switch"><input type="checkbox" id="cfgPtbr" checked onchange="updateLinks()"><span class="slider"></span></label>
           </div>
@@ -121,8 +123,8 @@ app.get(['/', '/configure'], (req, res) => {
 
           <div class="toggle-item">
             <div>
-              <div class="toggle-label">🧹 Anti-Anúncios (Higienização)</div>
-              <div class="toggle-desc">Remove propagandas de sites e apostas dentro das legendas</div>
+              <div class="toggle-label">🧹 Higienização Anti-Anúncios</div>
+              <div class="toggle-desc">Remove propagandas de sites e cassinos dentro das legendas</div>
             </div>
             <label class="switch"><input type="checkbox" id="cfgAds" checked onchange="updateLinks()"><span class="slider"></span></label>
           </div>
@@ -139,7 +141,7 @@ app.get(['/', '/configure'], (req, res) => {
         <div class="stats-bar">
           <div class="stats-item">⚡ Cache RAM: <span>${stats.memoryEntries} itens</span></div>
           <div class="stats-item">💾 Cache Disco: <span>${stats.diskFiles} arquivos (${stats.diskSizeMB} MB)</span></div>
-          <div class="stats-item">🛡️ Status: <span style="color: var(--success)">Online 24/7</span></div>
+          <div class="stats-item">🛡️ Status: <span style="color: var(--success)">Ativo & Saudável</span></div>
         </div>
       </div>
 
@@ -189,7 +191,7 @@ app.get('/:config/manifest.json', (req, res) => {
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.json({
     ...BASE_MANIFEST,
-    name: 'SyncSubs'
+    name: 'SubFlow'
   });
 });
 
@@ -256,18 +258,20 @@ app.get('/subtitle/:token/:season/:episode.vtt', async (req, res) => {
 app.get('/stats', (req, res) => {
   res.json({
     status: 'ok',
+    addon: 'SubFlow',
+    version: '1.2.0',
     uptime: process.uptime(),
     cache: cache.getStats()
   });
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok' });
+  res.json({ status: 'ok', name: 'SubFlow' });
 });
 
 app.listen(PORT, () => {
   console.log(`\n======================================================`);
-  console.log(`🚀 SyncSubs Enhanced rodando em: http://localhost:${PORT}`);
+  console.log(`🌊 SubFlow Addon rodando em: http://localhost:${PORT}`);
   console.log(`📋 Manifest URL: http://localhost:${PORT}/manifest.json`);
   console.log(`======================================================\n`);
 });
