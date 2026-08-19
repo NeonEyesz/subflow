@@ -36,22 +36,27 @@ async function searchOpenSubtitlesV3({ type, id, extra = {} }) {
       return [];
     }
 
-    // Filtra e mapeia legendas em Português do Brasil (pob) ou Português (por)
-    const ptSubs = response.data.subtitles.filter(sub => {
+    // Filtra legendas em Português (pob/por) e Inglês (eng)
+    const targetSubs = response.data.subtitles.filter(sub => {
       const l = (sub.lang || '').toLowerCase();
-      return l === 'pob' || l === 'por' || l === 'pt-br' || l === 'pt';
+      return l === 'pob' || l === 'por' || l === 'pt-br' || l === 'pt' || l === 'eng' || l === 'en';
     });
 
-    return ptSubs.map((sub, index) => {
-      const isPtBr = sub.lang === 'pob' || sub.lang === 'pt-br';
+    return targetSubs.map((sub, index) => {
+      const l = (sub.lang || '').toLowerCase();
+      let normalizedLang = 'por';
+      if (l === 'pob' || l === 'pt-br') normalizedLang = 'pob';
+      else if (l === 'eng' || l === 'en') normalizedLang = 'eng';
+
       return {
         sourceKey: 'opensubtitlesv3plus',
         providerId: sub.id || `v3-${index}`,
         downloadUrl: sub.url,
         fileId: sub.id,
         releaseName: extra.filename || `OpenSubtitles-${sub.id}`,
-        language: isPtBr ? 'pob' : 'por',
-        isPtBr: isPtBr,
+        language: normalizedLang,
+        isPtBr: normalizedLang === 'pob',
+        isEnglish: normalizedLang === 'eng',
         ratings: 5,
         votes: 10,
         downloads: 100,
@@ -75,7 +80,7 @@ async function searchOpenSubtitlesRest({ imdbId, season, episode, moviehash, byt
 
   try {
     const params = {
-      languages: 'pt-br,pob,por',
+      languages: 'pt-br,pob,por,en,eng',
       order_by: 'download_count',
       order_direction: 'desc'
     };
@@ -119,7 +124,10 @@ async function searchOpenSubtitlesRest({ imdbId, season, episode, moviehash, byt
       const fileId = files[0]?.file_id;
       const releaseName = attributes.release || attributes.feature_details?.movie_name || '';
       const language = (attributes.language || '').toLowerCase();
-      const isPtBr = language === 'pt-br' || language === 'pob';
+      
+      let normalizedLang = 'por';
+      if (language === 'pt-br' || language === 'pob') normalizedLang = 'pob';
+      else if (language === 'en' || language === 'eng') normalizedLang = 'eng';
 
       return {
         sourceKey: 'opensubtitles_rest',
@@ -127,8 +135,9 @@ async function searchOpenSubtitlesRest({ imdbId, season, episode, moviehash, byt
         fileId: fileId,
         downloadUrl: attributes.url || null,
         releaseName: releaseName,
-        language: isPtBr ? 'pob' : 'por',
-        isPtBr: isPtBr,
+        language: normalizedLang,
+        isPtBr: normalizedLang === 'pob',
+        isEnglish: normalizedLang === 'eng',
         ratings: attributes.ratings || 0,
         votes: attributes.votes || 0,
         downloads: attributes.download_count || 0,
@@ -181,7 +190,7 @@ async function downloadOpenSubtitle(candidate) {
 
     let buffer = Buffer.from(fileRes.data);
 
-    // Se for gzip comprimido (magic bytes 0x1f 0x8b)
+    // Se for gzip comprimido
     if (buffer.length > 2 && buffer[0] === 0x1f && buffer[1] === 0x8b) {
       buffer = zlib.gunzipSync(buffer);
     }

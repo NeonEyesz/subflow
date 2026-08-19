@@ -56,7 +56,7 @@ function rankCandidates(candidates, { filename, moviehash }) {
 }
 
 /**
- * Busca legendas e gera a lista de candidatos ordenados com payload base64
+ * Busca legendas e gera a lista de candidatos com suporte a PT-BR e Inglês
  */
 async function getSubtitles({ type, id, extra = {} }) {
   let imdbId = id;
@@ -83,7 +83,7 @@ async function getSubtitles({ type, id, extra = {} }) {
     extra
   };
 
-  // Executa buscas em paralelo nos múltiplos provedores
+  // Executa buscas em paralelo
   const [openSubV3Results, openSubRestResults, subdlResults] = await Promise.all([
     searchOpenSubtitlesV3(queryParams),
     searchOpenSubtitlesRest(queryParams),
@@ -96,38 +96,69 @@ async function getSubtitles({ type, id, extra = {} }) {
     return [];
   }
 
-  // Ordena por ranking e compatibilidade
-  const ranked = rankCandidates(allCandidates, queryParams);
-
-  // Limita aos melhores 8 candidatos para o payload
-  const topCandidates = ranked.slice(0, 8).map((cand, idx) => ({
-    sourceKey: cand.sourceKey,
-    providerId: cand.providerId,
-    fileId: cand.fileId,
-    downloadUrl: cand.downloadUrl,
-    releaseName: cand.releaseName,
-    ranking: idx + 1
-  }));
-
-  const payload = {
-    candidatos: topCandidates,
-    cacheKey: `sub-${id}-${extra.videoHash || 'nohash'}`,
-    release: topCandidates.map(c => c.releaseName).filter(Boolean),
-    fallback: null
-  };
-
-  const token = Buffer.from(JSON.stringify(payload)).toString('base64');
   const seasonParam = season !== null ? season : 0;
   const episodeParam = episode !== null ? episode : 0;
+  const results = [];
 
-  return [
-    {
-      id: `syncsubs-external-${token.substring(0, 20)}`,
-      url: `/subtitle/${encodeURIComponent(token)}/${seasonParam}/${episodeParam}.vtt`,
+  // 1. Faixa em Português (PT-BR prioritário)
+  const ptCandidates = allCandidates.filter(c => c.language === 'pob' || c.language === 'por');
+  if (ptCandidates.length > 0) {
+    const rankedPt = rankCandidates(ptCandidates, queryParams).slice(0, 8);
+    const topPt = rankedPt.map((cand, idx) => ({
+      sourceKey: cand.sourceKey,
+      providerId: cand.providerId,
+      fileId: cand.fileId,
+      downloadUrl: cand.downloadUrl,
+      releaseName: cand.releaseName,
+      ranking: idx + 1
+    }));
+
+    const ptPayload = {
+      candidatos: topPt,
+      cacheKey: `sub-pt-${id}-${extra.videoHash || 'nohash'}`,
+      release: topPt.map(c => c.releaseName).filter(Boolean),
+      fallback: null
+    };
+
+    const ptToken = Buffer.from(JSON.stringify(ptPayload)).toString('base64');
+    results.push({
+      id: `syncsubs-pt-${ptToken.substring(0, 16)}`,
+      url: `/subtitle/${encodeURIComponent(ptToken)}/${seasonParam}/${episodeParam}.vtt`,
       lang: 'pob',
       label: 'SyncSubs [PT-BR Automático]'
-    }
-  ];
+    });
+  }
+
+  // 2. Faixa em Inglês (English Sync)
+  const enCandidates = allCandidates.filter(c => c.language === 'eng');
+  if (enCandidates.length > 0) {
+    const rankedEn = rankCandidates(enCandidates, queryParams).slice(0, 8);
+    const topEn = rankedEn.map((cand, idx) => ({
+      sourceKey: cand.sourceKey,
+      providerId: cand.providerId,
+      fileId: cand.fileId,
+      downloadUrl: cand.downloadUrl,
+      releaseName: cand.releaseName,
+      ranking: idx + 1
+    }));
+
+    const enPayload = {
+      candidatos: topEn,
+      cacheKey: `sub-en-${id}-${extra.videoHash || 'nohash'}`,
+      release: topEn.map(c => c.releaseName).filter(Boolean),
+      fallback: null
+    };
+
+    const enToken = Buffer.from(JSON.stringify(enPayload)).toString('base64');
+    results.push({
+      id: `syncsubs-en-${enToken.substring(0, 16)}`,
+      url: `/subtitle/${encodeURIComponent(enToken)}/${seasonParam}/${episodeParam}.vtt`,
+      lang: 'eng',
+      label: 'SyncSubs [English Sync]'
+    });
+  }
+
+  return results;
 }
 
 /**
@@ -159,7 +190,7 @@ async function resolveAndDownloadSubtitle(token) {
 
   let lastError = null;
 
-  // 2. Loop de Fallback Automático (tenta candidato 0, 1, 2...)
+  // 2. Loop de Fallback Automático
   for (let i = 0; i < candidatos.length; i++) {
     const candidate = candidatos[i];
     console.log(`[SyncSubs] Tentando baixar candidato #${i + 1} (${candidate.sourceKey} - ${candidate.releaseName || candidate.providerId})`);
@@ -175,7 +206,6 @@ async function resolveAndDownloadSubtitle(token) {
 
       if (vttContent && vttContent.includes('WEBVTT')) {
         console.log(`[SyncSubs] Sucesso no candidato #${i + 1}! Gravando em cache...`);
-        // Salva no cache para acessos futuros instantâneos
         if (cacheKey) {
           cache.set(cacheKey, vttContent);
         }
