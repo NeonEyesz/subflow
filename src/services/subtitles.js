@@ -1,5 +1,6 @@
 const { searchOpenSubtitlesV3, searchOpenSubtitlesRest, downloadOpenSubtitle } = require('./opensubtitles');
 const { searchSubDL, downloadSubDL } = require('./subdl');
+const { autoSyncWithReference } = require('../utils/sync');
 const cache = require('../utils/cache');
 
 /**
@@ -20,41 +21,46 @@ function calculateReleaseMatchScore(candidateRelease, targetFilename) {
   let matches = 0;
   for (const token of candidateTokens) {
     if (targetTokens.has(token)) {
-      if (['1080p', '2160p', '4k', 'bluray', 'web-dl', 'yts', 'rarbg', 'psa'].includes(token)) {
-        matches += 3;
+      if (['1080p', '2160p', '4k', 'bluray', 'web-dl', 'yts', 'rarbg', 'psa', 'flux', 'ntb'].includes(token)) {
+        matches += 4;
       } else {
         matches += 1;
       }
     }
   }
 
-  return matches * 15;
+  return matches * 20;
 }
 
 /**
- * Classifica e ordena os candidatos de legenda
+ * Classifica e ordena os candidatos de legenda por precisão e compatibilidade
  */
 function rankCandidates(candidates, { filename, moviehash }) {
   return candidates.map(candidate => {
     let score = 0;
 
-    // Se bateu o VideoHash, prioridade absoluta
-    if (candidate.fromHashMatch) {
-      score += 1000;
+    // 1. VideoHash exato (correspondência perfeita do vídeo)
+    if (candidate.fromHashMatch || candidate.matchType === 'h') {
+      score += 5000;
     }
 
-    // Se é estritamente PT-BR confirmado (pob)
+    // 2. Tag / Nome de arquivo exato
+    if (candidate.fromTagMatch || candidate.matchType === 't') {
+      score += 2000;
+    }
+
+    // 3. PT-BR confirmado
     if (candidate.isPtBr) {
-      score += 300;
+      score += 500;
     }
 
-    // Compatibilidade com o nome do arquivo / release / anime
+    // 4. Compatibilidade de release (tags como 1080p, BluRay, WEB-DL, etc.)
     if (filename && candidate.releaseName) {
       score += calculateReleaseMatchScore(candidate.releaseName, filename);
     }
 
-    // Popularidade e avaliações
-    score += Math.min((candidate.downloads || 0) / 100, 50);
+    // 5. Popularidade e avaliações
+    score += Math.min((candidate.downloads || 0) / 50, 100);
     score += (candidate.ratings || 0) * 10;
 
     return {
@@ -72,7 +78,8 @@ function parseUserConfig(configStr) {
     enablePtBr: true,
     enableEnglish: true,
     fallbackPtPt: true,
-    cleanAds: true
+    cleanAds: true,
+    autoSync: true
   };
 
   if (!configStr) return defaults;
@@ -83,7 +90,8 @@ function parseUserConfig(configStr) {
       enablePtBr: params.get('ptbr') !== '0',
       enableEnglish: params.get('eng') !== '0',
       fallbackPtPt: params.get('ptpt') !== '0',
-      cleanAds: params.get('ads') !== '0'
+      cleanAds: params.get('ads') !== '0',
+      autoSync: params.get('sync') !== '0'
     };
   } catch (err) {
     return defaults;
@@ -91,14 +99,13 @@ function parseUserConfig(configStr) {
 }
 
 /**
- * Busca legendas e gera a lista de candidatos com suporte a múltiplos idiomas e configurações
+ * Busca legendas e gera a lista de candidatos com suporte a auto-sincronia por referência
  */
 async function getSubtitles({ type, id, extra = {}, config = '' }) {
   let imdbId = id;
   let season = null;
   let episode = null;
 
-  // Extrai informações para séries (ex: tt0903747:1:1)
   if (id.includes(':')) {
     const parts = id.split(':');
     imdbId = parts[0];
@@ -120,7 +127,6 @@ async function getSubtitles({ type, id, extra = {}, config = '' }) {
     extra
   };
 
-  // Executa buscas em paralelo
   const [openSubV3Results, openSubRestResults, subdlResults] = await Promise.all([
     searchOpenSubtitlesV3(queryParams),
     searchOpenSubtitlesRest(queryParams),
@@ -136,6 +142,11 @@ async function getSubtitles({ type, id, extra = {}, config = '' }) {
   const seasonParam = season !== null ? season : 0;
   const episodeParam = episode !== null ? episode : 0;
   const results = [];
+
+  // Localiza a melhor legenda em inglês para usar como referência de tempo caso precise sincronizar
+  const enCandidates = allCandidates.filter(c => c.language === 'eng');
+  const rankedEn = enCandidates.length > 0 ? rankCandidates(enCandidates, queryParams).slice(0, 5) : [];
+  const topEnCandidate = rankedEn.length > 0 ? rankedEn[0] : null;
 
   // 1. Faixa PT-BR (Português Brasileiro)
   if (userConfig.enablePtBr) {
@@ -155,15 +166,23 @@ async function getSubtitles({ type, id, extra = {}, config = '' }) {
         fileId: cand.fileId,
         downloadUrl: cand.downloadUrl,
         releaseName: cand.releaseName,
+        fromHashMatch: cand.fromHashMatch,
+        fromTagMatch: cand.fromTagMatch,
         cleanAds: userConfig.cleanAds,
         ranking: idx + 1
       }));
 
       const ptPayload = {
         candidatos: topPt,
-        cacheKey: `subflow-pt-${id}-${extra.videoHash || 'nohash'}`,
+        referenceEn: topEnCandidate ? {
+          sourceKey: topEnCandidate.sourceKey,
+          providerId: topEnCandidate.providerId,
+          downloadUrl: topEnCandidate.downloadUrl
+        } : null,
+        cacheKey: `subflow-pt-${id}-${extra.videoHash || extra.filename || 'default'}`,
         release: topPt.map(c => c.releaseName).filter(Boolean),
         cleanAds: userConfig.cleanAds,
+        autoSync: userConfig.autoSync,
         fallback: null
       };
 
@@ -178,36 +197,33 @@ async function getSubtitles({ type, id, extra = {}, config = '' }) {
   }
 
   // 2. Faixa Inglês (English Sync)
-  if (userConfig.enableEnglish) {
-    const enCandidates = allCandidates.filter(c => c.language === 'eng');
-    if (enCandidates.length > 0) {
-      const rankedEn = rankCandidates(enCandidates, queryParams).slice(0, 8);
-      const topEn = rankedEn.map((cand, idx) => ({
-        sourceKey: cand.sourceKey,
-        providerId: cand.providerId,
-        fileId: cand.fileId,
-        downloadUrl: cand.downloadUrl,
-        releaseName: cand.releaseName,
-        cleanAds: userConfig.cleanAds,
-        ranking: idx + 1
-      }));
+  if (userConfig.enableEnglish && rankedEn.length > 0) {
+    const topEn = rankedEn.map((cand, idx) => ({
+      sourceKey: cand.sourceKey,
+      providerId: cand.providerId,
+      fileId: cand.fileId,
+      downloadUrl: cand.downloadUrl,
+      releaseName: cand.releaseName,
+      cleanAds: userConfig.cleanAds,
+      ranking: idx + 1
+    }));
 
-      const enPayload = {
-        candidatos: topEn,
-        cacheKey: `subflow-en-${id}-${extra.videoHash || 'nohash'}`,
-        release: topEn.map(c => c.releaseName).filter(Boolean),
-        cleanAds: userConfig.cleanAds,
-        fallback: null
-      };
+    const enPayload = {
+      candidatos: topEn,
+      cacheKey: `subflow-en-${id}-${extra.videoHash || extra.filename || 'default'}`,
+      release: topEn.map(c => c.releaseName).filter(Boolean),
+      cleanAds: userConfig.cleanAds,
+      autoSync: false,
+      fallback: null
+    };
 
-      const enToken = Buffer.from(JSON.stringify(enPayload)).toString('base64');
-      results.push({
-        id: `subflow-en-${enToken.substring(0, 16)}`,
-        url: `/subtitle/${encodeURIComponent(enToken)}/${seasonParam}/${episodeParam}.vtt`,
-        lang: 'eng',
-        label: 'SubFlow [English Sync]'
-      });
-    }
+    const enToken = Buffer.from(JSON.stringify(enPayload)).toString('base64');
+    results.push({
+      id: `subflow-en-${enToken.substring(0, 16)}`,
+      url: `/subtitle/${encodeURIComponent(enToken)}/${seasonParam}/${episodeParam}.vtt`,
+      lang: 'eng',
+      label: 'SubFlow [English Sync]'
+    });
   }
 
   // 3. Faixa de Legendas Forçadas (Forced Subtitles) se detectada
@@ -226,9 +242,10 @@ async function getSubtitles({ type, id, extra = {}, config = '' }) {
 
     const forcedPayload = {
       candidatos: topForced,
-      cacheKey: `subflow-forced-${id}-${extra.videoHash || 'nohash'}`,
+      cacheKey: `subflow-forced-${id}-${extra.videoHash || extra.filename || 'default'}`,
       release: topForced.map(c => c.releaseName).filter(Boolean),
       cleanAds: userConfig.cleanAds,
+      autoSync: false,
       fallback: null
     };
 
@@ -245,7 +262,7 @@ async function getSubtitles({ type, id, extra = {}, config = '' }) {
 }
 
 /**
- * Tenta baixar a legenda do candidato atual. Se falhar, executa fallback automático para os próximos!
+ * Tenta baixar a legenda do candidato e aplica auto-sincronia se necessário
  */
 async function resolveAndDownloadSubtitle(token) {
   let payload;
@@ -256,7 +273,7 @@ async function resolveAndDownloadSubtitle(token) {
     throw new Error('Token de legenda inválido');
   }
 
-  const { candidatos, cacheKey, cleanAds = true } = payload;
+  const { candidatos, referenceEn, cacheKey, cleanAds = true, autoSync = true } = payload;
 
   // 1. Verifica no cache persistente
   if (cacheKey && cache.has(cacheKey)) {
@@ -288,6 +305,22 @@ async function resolveAndDownloadSubtitle(token) {
       }
 
       if (vttContent && vttContent.includes('WEBVTT')) {
+        // Se a legenda não veio de hash exato e autoSync estiver ativo com referência em inglês disponível
+        if (autoSync && referenceEn && !candidate.fromHashMatch) {
+          try {
+            console.log('[SubFlow Sync] Buscando referência em inglês para auto-sincronizar timestamps...');
+            let refVtt = null;
+            if (referenceEn.sourceKey === 'opensubtitlesv3plus' || referenceEn.sourceKey === 'opensubtitles_rest') {
+              refVtt = await downloadOpenSubtitle(referenceEn, false);
+            }
+            if (refVtt && refVtt.includes('WEBVTT')) {
+              vttContent = autoSyncWithReference(vttContent, refVtt);
+            }
+          } catch (syncErr) {
+            console.warn('[SubFlow Sync] Não foi possível obter referência em inglês, mantendo legenda original:', syncErr.message);
+          }
+        }
+
         console.log(`[SubFlow] Sucesso no candidato #${i + 1}! Gravando em cache...`);
         if (cacheKey) {
           cache.set(cacheKey, vttContent);

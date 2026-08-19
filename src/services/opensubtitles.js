@@ -8,70 +8,97 @@ const OPENSUBTITLES_API_KEY = process.env.OPENSUBTITLES_API_KEY || '';
 const USER_AGENT = process.env.OPENSUBTITLES_USER_AGENT || 'SubFlow v1.2.0';
 
 /**
- * Busca legendas via OpenSubtitles v3
+ * Executa busca na API OpenSubtitles v3 do Stremio com fallback em cascata
  */
 async function searchOpenSubtitlesV3({ type, id, extra = {} }) {
-  try {
-    let extraPath = '';
-    const extraParams = [];
+  const attempts = [];
 
-    if (extra.videoHash) extraParams.push(`videoHash=${encodeURIComponent(extra.videoHash)}`);
-    if (extra.videoSize) extraParams.push(`videoSize=${encodeURIComponent(extra.videoSize)}`);
-    if (extra.filename) extraParams.push(`filename=${encodeURIComponent(extra.filename)}`);
+  // Tentativa 1: Com VideoHash e Filename completos
+  if (extra.videoHash || extra.filename) {
+    const params = [];
+    if (extra.videoHash) params.push(`videoHash=${encodeURIComponent(extra.videoHash)}`);
+    if (extra.videoSize) params.push(`videoSize=${encodeURIComponent(extra.videoSize)}`);
+    if (extra.filename) params.push(`filename=${encodeURIComponent(extra.filename)}`);
+    attempts.push(`${OPENSUBTITLES_V3_BASE}/subtitles/${type}/${id}/${params.join('&')}.json`);
+  }
 
-    if (extraParams.length > 0) {
-      extraPath = `/${extraParams.join('&')}`;
-    }
+  // Tentativa 2: Com Filename apenas (caso o hash não esteja na base)
+  if (extra.filename && extra.videoHash) {
+    attempts.push(`${OPENSUBTITLES_V3_BASE}/subtitles/${type}/${id}/filename=${encodeURIComponent(extra.filename)}.json`);
+  }
 
-    const url = `${OPENSUBTITLES_V3_BASE}/subtitles/${type}/${id}${extraPath}.json`;
+  // Tentativa 3: Busca padrão por IMDb ID (fallback garantido)
+  attempts.push(`${OPENSUBTITLES_V3_BASE}/subtitles/${type}/${id}.json`);
 
-    const response = await axios.get(url, {
-      timeout: 8000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  let rawSubtitles = [];
+
+  for (const url of attempts) {
+    try {
+      const response = await axios.get(url, {
+        timeout: 6000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+      });
+
+      if (response.data && Array.isArray(response.data.subtitles) && response.data.subtitles.length > 0) {
+        // Se encontrou legendas neste nível, salva e verifica se tem PT-BR
+        rawSubtitles = response.data.subtitles;
+        const hasPt = rawSubtitles.some(s => {
+          const l = (s.lang || '').toLowerCase();
+          return l === 'pob' || l === 'pt-br' || l === 'por';
+        });
+
+        // Se encontrou legendas em português ou inglês na tentativa mais específica, usa esta
+        if (hasPt) {
+          break;
+        }
       }
-    });
-
-    if (!response.data || !Array.isArray(response.data.subtitles)) {
-      return [];
+    } catch (err) {
+      // Continua para a próxima tentativa de fallback
     }
+  }
 
-    // Filtra legendas em Português (pob/por) e Inglês (eng)
-    const targetSubs = response.data.subtitles.filter(sub => {
-      const l = (sub.lang || '').toLowerCase();
-      return l === 'pob' || l === 'por' || l === 'pt-br' || l === 'pt' || l === 'eng' || l === 'en';
-    });
-
-    return targetSubs.map((sub, index) => {
-      const l = (sub.lang || '').toLowerCase();
-      let normalizedLang = 'por';
-      if (l === 'pob' || l === 'pt-br') normalizedLang = 'pob';
-      else if (l === 'eng' || l === 'en') normalizedLang = 'eng';
-
-      const release = extra.filename || `OpenSubtitles-${sub.id}`;
-      const isForced = (release || '').toLowerCase().includes('forced') || (release || '').toLowerCase().includes('forçada');
-
-      return {
-        sourceKey: 'opensubtitlesv3plus',
-        providerId: sub.id || `v3-${index}`,
-        downloadUrl: sub.url,
-        fileId: sub.id,
-        releaseName: release,
-        language: normalizedLang,
-        isPtBr: normalizedLang === 'pob',
-        isEnglish: normalizedLang === 'eng',
-        isForced: isForced,
-        ratings: 5,
-        votes: 10,
-        downloads: 100,
-        subEncoding: sub.SubEncoding || 'UTF-8',
-        fromHashMatch: !!extra.videoHash
-      };
-    });
-  } catch (err) {
-    console.warn('[OpenSubtitles v3] Erro na busca:', err.message);
+  if (rawSubtitles.length === 0) {
     return [];
   }
+
+  // Filtra legendas em Português e Inglês
+  const targetSubs = rawSubtitles.filter(sub => {
+    const l = (sub.lang || '').toLowerCase();
+    return l === 'pob' || l === 'por' || l === 'pt-br' || l === 'pt' || l === 'eng' || l === 'en';
+  });
+
+  return targetSubs.map((sub, index) => {
+    const l = (sub.lang || '').toLowerCase();
+    let normalizedLang = 'por';
+    if (l === 'pob' || l === 'pt-br') normalizedLang = 'pob';
+    else if (l === 'eng' || l === 'en') normalizedLang = 'eng';
+
+    // matchType: 'h' = hash exato, 't' = tag/nome exato, 'i' = imdb fallback
+    const matchType = sub.m || 'i';
+    const isFromHash = matchType === 'h';
+    const isFromTag = matchType === 't';
+
+    return {
+      sourceKey: 'opensubtitlesv3plus',
+      providerId: sub.id || `v3-${index}`,
+      downloadUrl: sub.url,
+      fileId: sub.id,
+      releaseName: extra.filename || `OpenSubtitles-${sub.id}`,
+      language: normalizedLang,
+      isPtBr: normalizedLang === 'pob',
+      isEnglish: normalizedLang === 'eng',
+      isForced: (sub.g || '').toString() === 'forced',
+      matchType: matchType,
+      fromHashMatch: isFromHash,
+      fromTagMatch: isFromTag,
+      ratings: isFromHash ? 100 : (isFromTag ? 50 : 10),
+      votes: 10,
+      downloads: 100,
+      subEncoding: sub.SubEncoding || 'UTF-8'
+    };
+  });
 }
 
 /**
@@ -89,24 +116,12 @@ async function searchOpenSubtitlesRest({ imdbId, season, episode, moviehash, byt
       order_direction: 'desc'
     };
 
-    if (imdbId) {
-      params.imdb_id = imdbId.replace(/^tt/, '');
-    }
-    if (season !== undefined && season !== null) {
-      params.season_number = season;
-    }
-    if (episode !== undefined && episode !== null) {
-      params.episode_number = episode;
-    }
-    if (moviehash) {
-      params.moviehash = moviehash;
-    }
-    if (bytesize) {
-      params.moviebytesize = bytesize;
-    }
-    if (filename) {
-      params.query = filename;
-    }
+    if (imdbId) params.imdb_id = imdbId.replace(/^tt/, '');
+    if (season !== undefined && season !== null) params.season_number = season;
+    if (episode !== undefined && episode !== null) params.episode_number = episode;
+    if (moviehash) params.moviehash = moviehash;
+    if (bytesize) params.moviebytesize = bytesize;
+    if (filename) params.query = filename;
 
     const response = await axios.get(`${OPENSUBTITLES_API_URL}/subtitles`, {
       params,
@@ -115,7 +130,7 @@ async function searchOpenSubtitlesRest({ imdbId, season, episode, moviehash, byt
         'Api-Key': OPENSUBTITLES_API_KEY,
         'Accept': 'application/json'
       },
-      timeout: 8000
+      timeout: 6000
     });
 
     if (!response.data || !response.data.data) {
@@ -152,7 +167,6 @@ async function searchOpenSubtitlesRest({ imdbId, season, episode, moviehash, byt
       };
     });
   } catch (err) {
-    console.warn('[OpenSubtitles REST] Erro ao buscar:', err.message);
     return [];
   }
 }
