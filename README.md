@@ -1,54 +1,39 @@
-# 🎬 SyncSubs (Self-Hosted Stremio & Nuvio Addon)
+# 🎬 SyncSubs Enhanced (Stremio & Nuvio Addon)
 
-Addon independente para **Stremio** e **Nuvio** focado em legendas em Português do Brasil (**PT-BR**), com seleção inteligente por VideoHash e release, conversão automática para WebVTT, cache persistente e fallback automático.
-
----
-
-## 🚀 Como Funciona por Dentro
-
-1. **Protocolo Stremio v3**:
-   - O player envia requisições para `/subtitles/movie/{imdb_id}.json` ou `/subtitles/series/{imdb_id}:{season}:{episode}.json`.
-   - Inclui parâmetros extras quando disponíveis (`videoHash`, `videoSize`, `filename`).
-
-2. **Busca e Ranking Inteligente**:
-   - Consulta múltiplos provedores (OpenSubtitles REST API, SubDL, etc.) filtrando estritamente por Português Brasileiro (`pob` / `pt-br`).
-   - Calcula um índice de compatibilidade para cada legenda baseado em:
-     - **VideoHash Match**: Correspondência exata com o arquivo de vídeo em reprodução.
-     - **Release Match**: Correspondência entre o nome do arquivo (ex: `1080p`, `BluRay`, `YTS`, `WEB-DL`, `AMZN`) e a legenda.
-     - **Popularidade e Avaliações**: Quantidade de downloads e pontuações positivas.
-
-3. **Fallback Dinâmico e Proxy**:
-   - O addon retorna uma URL intermediária com os candidatos ordenados em um token Base64 (`/subtitle/{token}/{season}/{episode}.vtt`).
-   - Quando o Stremio/Nuvio solicita a legenda:
-     - Se estiver no **Cache Persistente**, a entrega é instantânea.
-     - Se não estiver, tenta baixar o Candidato #1. Se houver falha de rede ou arquivo corrompido, tenta automaticamente o Candidato #2, #3, etc.
-     - Converte o encoding (Windows-1252 / ISO-8859-1 para UTF-8 limpo) e formata para o padrão WebVTT.
-     - Salva no cache para acessos futuros.
+Addon de alta performance para **Stremio** e **Nuvio** com seleção inteligente de legendas em **Português do Brasil (PT-BR)** e **Inglês (English)**, sincronização automática via VideoHash, higienização anti-anúncios, cache duplo (RAM + Disco) e fallback automático.
 
 ---
 
-## 🛠️ Como Rodar Localmente (Windows / Linux / Mac)
+## 🌟 Principais Recursos
 
-### Pré-requisitos:
-- [Node.js](https://nodejs.org) (v18+)
+- 🇧🇷 **Prioridade PT-BR:** Algoritmo dedicado para selecionar e ordenar as melhores legendas em Português do Brasil.
+- 🇺🇸 **Faixa em Inglês Simultânea (English Sync):** Entrega no mesmo player a faixa em inglês sincronizada com o vídeo.
+- 🧹 **Removedor de Anúncios (Anti-Spam):** Higieniza as legendas removendo propagandas de sites e cassinos automaticamente.
+- 🇵🇹 **Fallback Inteligente para PT-PT:** Se um filme raro não tiver PT-BR, oferece Português de Portugal como reserva de emergência.
+- ⚡ **Cache Duplo (RAM + Disco):**
+  - **Memória RAM:** Respostas instantâneas em ~1ms.
+  - **Disco Persistente:** Nunca perde as legendas já baixadas, mesmo reiniciando.
+  - **Auto-Limpeza (GC):** Limpeza automática de arquivos de cache não acessados há mais de 30 dias.
+- ⚙️ **Painel Web de Configurações (`/configure`):** Escolha quais idiomas e recursos deseja ativar com 1 clique.
+- 🎌 **Compatibilidade com Animes e Séries:** Reconhecimento avançado de grupos de fansub, tags de release e resoluções.
 
-### Instalação:
-1. Abra o terminal na pasta do projeto:
-   ```bash
-   cd syncsubs
-   ```
-2. Instale as dependências:
-   ```bash
-   npm install
-   ```
-3. Inicie o servidor:
-   ```bash
-   npm start
-   ```
-4. Acesse no navegador:
-   `http://localhost:7000`
-5. Clique em **Instalar no Stremio** ou copie o link do manifesto para o **Nuvio**:
-   `http://localhost:7000/manifest.json`
+---
+
+## 🚀 Como Usar Localmente (Windows / Linux / Mac)
+
+### 1. Iniciar o Servidor:
+No terminal da pasta `syncsubs`:
+```bash
+npm start
+```
+
+### 2. Acessar o Painel:
+Abra no navegador:
+`http://localhost:7000` ou `http://localhost:7000/configure`
+
+### 3. Instalar no Player:
+- **Stremio:** Clique no botão **"Instalar no Stremio"** (`stremio://localhost:7000/manifest.json`).
+- **Nuvio / Web:** Copie o link do manifesto exibido na tela (`http://localhost:7000/manifest.json`) e cole no seu aplicativo.
 
 ---
 
@@ -57,32 +42,34 @@ Addon independente para **Stremio** e **Nuvio** focado em legendas em Português
 ```bash
 docker-compose up -d --build
 ```
-O addon estará disponível em `http://localhost:7000`.
+O addon estará rodando em `http://localhost:7000`.
 
 ---
 
 ## ☁️ Como Fazer Deploy Gratuito na Nuvem (24/7)
 
-Caso queira ter seu próprio SyncSubs rodando online sem precisar deixar seu PC ligado:
+Para deixar o addon online 24 horas por dia em qualquer TV, celular ou PC:
 
-### Opção 1: [Railway.app](https://railway.app)
-1. Crie uma conta no Railway.
-2. Crie um novo projeto a partir do seu repositório GitHub ou suba a pasta.
-3. O Railway detectará o `Dockerfile` e gerará uma URL pública (ex: `https://meu-syncsubs.up.railway.app`).
-4. Adicione `https://meu-syncsubs.up.railway.app/manifest.json` no seu Stremio / Nuvio.
+### Opção 1: [Render.com](https://render.com) (100% Gratuito)
+1. Crie um repositório no seu GitHub e envie esta pasta:
+   ```bash
+   git remote add origin https://github.com/SEU_USUARIO/syncsubs.git
+   git push -u origin main
+   ```
+2. No Render, crie um **Web Service** conectado ao seu GitHub.
+3. Use o comando de build `npm install` e start `npm start`.
+4. Adicione o link gerado (`https://seu-addon.onrender.com/manifest.json`) no Stremio e Nuvio.
 
-### Opção 2: [Render.com](https://render.com)
-1. Crie um **Web Service** no Render.
-2. Conecte o repositório.
-3. Build Command: `npm install`
-4. Start Command: `npm start`
-5. Adicione a URL gerada no Stremio.
+### Opção 2: [Railway.app](https://railway.app)
+1. Suba o repositório no Railway.
+2. O Railway detectará o `Dockerfile` e gerará seu domínio público instantaneamente.
 
 ---
 
-## ⚙️ Variáveis de Ambiente (Opcionais)
+## 📊 Endpoints Disponíveis
 
-No arquivo `.env`:
-- `PORT`: Porta do servidor (padrão: `7000`)
-- `OPENSUBTITLES_API_KEY`: Chave de API da OpenSubtitles (opcional)
-- `SUBDL_API_KEY`: Chave de API do SubDL (opcional)
+- `GET /` ou `/configure` — Painel interativo com chaveadores e métricas.
+- `GET /manifest.json` — Manifesto padrão do addon.
+- `GET /:config/manifest.json` — Manifesto personalizado com suas preferências.
+- `GET /stats` — Telemetria de uso e estatísticas do cache.
+- `GET /health` — Verificação de integridade do servidor.

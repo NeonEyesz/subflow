@@ -8,7 +8,7 @@ const OPENSUBTITLES_API_KEY = process.env.OPENSUBTITLES_API_KEY || '';
 const USER_AGENT = process.env.OPENSUBTITLES_USER_AGENT || 'SyncSubs v1.0.0';
 
 /**
- * Busca legendas via OpenSubtitles v3 (serviço rápido e sem necessidade de API key)
+ * Busca legendas via OpenSubtitles v3 (rápido, sem limites, sem API key necessária)
  */
 async function searchOpenSubtitlesV3({ type, id, extra = {} }) {
   try {
@@ -48,15 +48,19 @@ async function searchOpenSubtitlesV3({ type, id, extra = {} }) {
       if (l === 'pob' || l === 'pt-br') normalizedLang = 'pob';
       else if (l === 'eng' || l === 'en') normalizedLang = 'eng';
 
+      const release = extra.filename || `OpenSubtitles-${sub.id}`;
+      const isForced = (release || '').toLowerCase().includes('forced') || (release || '').toLowerCase().includes('forçada');
+
       return {
         sourceKey: 'opensubtitlesv3plus',
         providerId: sub.id || `v3-${index}`,
         downloadUrl: sub.url,
         fileId: sub.id,
-        releaseName: extra.filename || `OpenSubtitles-${sub.id}`,
+        releaseName: release,
         language: normalizedLang,
         isPtBr: normalizedLang === 'pob',
         isEnglish: normalizedLang === 'eng',
+        isForced: isForced,
         ratings: 5,
         votes: 10,
         downloads: 100,
@@ -129,6 +133,8 @@ async function searchOpenSubtitlesRest({ imdbId, season, episode, moviehash, byt
       if (language === 'pt-br' || language === 'pob') normalizedLang = 'pob';
       else if (language === 'en' || language === 'eng') normalizedLang = 'eng';
 
+      const isForced = attributes.foreign_parts_only || (releaseName.toLowerCase().includes('forced'));
+
       return {
         sourceKey: 'opensubtitles_rest',
         providerId: item.id || fileId,
@@ -138,6 +144,7 @@ async function searchOpenSubtitlesRest({ imdbId, season, episode, moviehash, byt
         language: normalizedLang,
         isPtBr: normalizedLang === 'pob',
         isEnglish: normalizedLang === 'eng',
+        isForced: isForced,
         ratings: attributes.ratings || 0,
         votes: attributes.votes || 0,
         downloads: attributes.download_count || 0,
@@ -153,7 +160,7 @@ async function searchOpenSubtitlesRest({ imdbId, season, episode, moviehash, byt
 /**
  * Faz download do arquivo de legenda e converte para WebVTT UTF-8 limpo
  */
-async function downloadOpenSubtitle(candidate) {
+async function downloadOpenSubtitle(candidate, cleanAds = true) {
   try {
     let fileUrl = candidate.downloadUrl;
 
@@ -196,7 +203,7 @@ async function downloadOpenSubtitle(candidate) {
     }
 
     const utf8Content = bufferToUtf8(buffer);
-    return srtToVtt(utf8Content);
+    return srtToVtt(utf8Content, cleanAds);
   } catch (err) {
     console.error(`[OpenSubtitles] Falha ao baixar legenda ${candidate.fileId || candidate.providerId}:`, err.message);
     throw err;
