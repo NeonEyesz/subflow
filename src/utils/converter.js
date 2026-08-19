@@ -2,35 +2,6 @@ const iconv = require('iconv-lite');
 const chardet = require('chardet');
 
 /**
- * Padrões de regex para identificar propagandas comuns em legendas
- */
-const AD_PATTERNS = [
-  /opensubtitles/i,
-  /subdl\.com/i,
-  /legendas\.tv/i,
-  /baixadofilmes/i,
-  /yify/i,
-  /yts\.(mx|am|lt|ag)/i,
-  /subscene/i,
-  /traduzido por/i,
-  /tradu[cç][aã]o:?/i,
-  /sincronizado por/i,
-  /sincronia:?/i,
-  /legenda ripada/i,
-  /resync by/i,
-  /subtitles by/i,
-  /corrected by/i,
-  /encoded by/i,
-  /www\.[a-z0-9-]+\.(com|net|org|br|to|tv|cc|io|xyz|top|me)/i,
-  /https?:\/\/[^\s]+/i,
-  /bet(365|ano|fair|777|nacional)/i,
-  /1xbet/i,
-  /apostas?/i,
-  /cassino/i,
-  /blaze/i
-];
-
-/**
  * Converte um buffer de dados de legenda para string UTF-8 limpa.
  */
 function bufferToUtf8(buffer) {
@@ -59,76 +30,91 @@ function bufferToUtf8(buffer) {
 }
 
 /**
- * Higieniza o texto de diálogo (remove tags html malformadas ou preserva formatação limpa)
+ * Converte qualquer formato de legenda (SRT ou WebVTT bruto) em WebVTT 100% em conformidade com o padrão RFC.
+ * Remove cabeçalhos duplicados, anotações NOTE que corrompem timestamps e anúncios de cassino/apostas.
  */
-function sanitizeSubtitleLine(line) {
-  if (!line) return '';
-  // Remove tags de font color malformadas preservando o texto interno
-  let cleaned = line.replace(/<font[^>]*>/gi, '').replace(/<\/font>/gi, '');
-  return cleaned;
-}
+function srtToVtt(rawText, shouldCleanAds = true) {
+  if (!rawText) return 'WEBVTT\n\n';
 
-/**
- * Remove blocos de anúncios e propagandas de uma legenda
- */
-function cleanSubtitleText(text) {
-  if (!text) return '';
+  let lines = rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  const cleanedCues = [];
+  let currentCue = null;
 
-  const blocks = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split(/\n\n+/);
-  const cleanedBlocks = [];
-  let blockIndex = 1;
+  const timeRegex = /(?:(\d{2}:)?\d{2}:\d{2}[,\.]\d{3})\s*-->\s*(?:(\d{2}:)?\d{2}:\d{2}[,\.]\d{3})/;
 
-  for (const block of blocks) {
-    const lines = block.trim().split('\n');
-    if (lines.length < 2) continue;
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i].trim();
 
-    const timeIndex = lines.findIndex(l => l.includes('-->'));
-    if (timeIndex === -1) continue;
+    // Ignora declarações repetidas de WEBVTT ou tags de cabeçalho do scraper
+    if (line.startsWith('WEBVTT') || line.startsWith('header') || line.startsWith('X-TIMESTAMP') || line.startsWith('<u>') || line.startsWith('</u>')) {
+      continue;
+    }
 
-    const timeLine = lines[timeIndex];
-    const dialogLines = lines.slice(timeIndex + 1).map(sanitizeSubtitleLine).filter(Boolean);
+    // Limpa prefixo NOTE caso tenha sido colado na linha de tempo ou texto
+    if (line.startsWith('NOTE')) {
+      line = line.replace(/^NOTE\s*/i, '').trim();
+    }
 
-    if (dialogLines.length === 0) continue;
+    // Identifica linha de tempo
+    const match = line.match(timeRegex);
+    if (match) {
+      let timeLine = match[0].replace(/,/g, '.');
+      
+      // Garante formato HH:MM:SS.mmm em ambos os lados
+      const parts = timeLine.split('-->').map(p => {
+        let t = p.trim();
+        if (t.split(':').length === 2) t = '00:' + t;
+        return t;
+      });
+      timeLine = parts[0] + ' --> ' + parts[1];
 
-    const combinedDialog = dialogLines.join(' ');
+      currentCue = {
+        time: timeLine,
+        lines: []
+      };
+      cleanedCues.push(currentCue);
+      continue;
+    }
 
-    // Se o diálogo contiver padrão de propaganda, ignora este bloco
-    const isAd = AD_PATTERNS.some(pattern => pattern.test(combinedDialog));
-    if (!isAd) {
-      cleanedBlocks.push(`${blockIndex}\n${timeLine}\n${dialogLines.join('\n')}`);
-      blockIndex++;
+    // Se estivermos dentro de uma fala
+    if (currentCue && line && !line.match(/^\d+$/)) {
+      // Decodifica entidades HTML e limpa tags malformadas
+      line = line
+        .replace(/&gt;/g, '>')
+        .replace(/&lt;/g, '<')
+        .replace(/&amp;/g, '&')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/<font[^>]*>/gi, '')
+        .replace(/<\/font>/gi, '');
+
+      // Filtra anúncios se habilitado
+      if (shouldCleanAds) {
+        const isAd = /opensubtitles|subdl|yify|yts\.|legendas\.tv|bet(365|ano|fair|777|nacional)|1xbet|apostas?|cassino|blaze|traduzido por|sincronizado por/i.test(line);
+        if (isAd) continue;
+      }
+
+      currentCue.lines.push(line);
     }
   }
 
-  return cleanedBlocks.join('\n\n');
-}
+  const output = ['WEBVTT\n'];
+  let index = 1;
 
-/**
- * Converte conteúdo de legenda SRT para WebVTT padrão limpo e higienizado.
- */
-function srtToVtt(srtContent, shouldCleanAds = true) {
-  if (!srtContent) return 'WEBVTT\n\n';
-
-  let content = srtContent.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
-
-  // Substitui separadores de tempo SRT (vírgula) por VTT (ponto)
-  content = content.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
-
-  // Limpa anúncios se habilitado
-  if (shouldCleanAds) {
-    content = cleanSubtitleText(content);
+  for (const cue of cleanedCues) {
+    if (cue.lines.length > 0) {
+      output.push(String(index));
+      output.push(cue.time);
+      output.push(cue.lines.join('\n'));
+      output.push('');
+      index++;
+    }
   }
 
-  if (!content.startsWith('WEBVTT')) {
-    content = `WEBVTT\n\n${content}\n`;
-  }
-
-  return content;
+  return output.join('\n');
 }
 
 module.exports = {
   bufferToUtf8,
-  srtToVtt,
-  cleanSubtitleText,
-  sanitizeSubtitleLine
+  srtToVtt
 };
