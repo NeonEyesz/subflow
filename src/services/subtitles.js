@@ -25,6 +25,29 @@ function rankCandidates(candidates, {filename}) {
     return {...c, rankingScore: score, originalIndex: index};
   }).sort((a,b)=>b.rankingScore-a.rankingScore || a.originalIndex-b.originalIndex);
 }
+// Providers often list the same release several times (including HI variants).
+// Keep different release names in different tracks: the first successful HTTP
+// response must not silently switch the viewer to a different cut of the video.
+function releaseKey(candidate) {
+  const parts = tokens(candidate.releaseName);
+  while (parts.length && ['srt','vtt','ass','ssa','sub','hi','sdh','cc','pt','ptbr','eng','en'].includes(parts[parts.length - 1])) parts.pop();
+  return parts.length ? parts.join(' ') : `url:${candidate.downloadUrl}`;
+}
+function groupCandidateReleases(candidates, extra, limit = 3) {
+  const groups = new Map();
+  const standard = candidates.filter(candidate => !candidate.isForced &&
+    !/\b(?:commentary|commentaries|director.?s[ ._-]*comments?|audio[ ._-]*commentary)\b/i.test(candidate.releaseName || ''));
+  for (const candidate of rankCandidates(standard.length ? standard : candidates, extra)) {
+    const key = releaseKey(candidate);
+    if (!groups.has(key)) {
+      if (groups.size >= limit) continue;
+      groups.set(key, []);
+    }
+    const group = groups.get(key);
+    if (group.length < 5) group.push(candidate);
+  }
+  return [...groups.values()];
+}
 function parseUserConfig(configStr) {
   const p = new URLSearchParams(configStr || '');
   return {enablePtBr:p.get('ptbr')!=='0', enableEnglish:p.get('eng')!=='0', fallbackPtPt:p.get('ptpt')!=='0', cleanAds:p.get('ads')!=='0'};
@@ -36,8 +59,8 @@ async function getSubtitles({type,id,extra={},config=''}) {
   const parts = id.split(':'); const season = parts[1] || '0', episode = parts[2] || '0';
   const outputs = [];
   function add(language, lang, label) {
-    const ranked = rankCandidates(all.filter(c=>c.language===language),extra).slice(0,5);
-    if (!ranked.length) return;
+    const groups = groupCandidateReleases(all.filter(c=>c.language===language), extra);
+    groups.forEach((ranked,index) => {
     const urls=ranked.map(c=>c.downloadUrl);
     const k=crypto.createHash('sha256').update(JSON.stringify([id,language,extra.videoHash||'',extra.filename||'',settings.cleanAds,urls])).digest('hex');
     const payload={v:2,u:urls,k,a:settings.cleanAds,h:ranked[0].fromHashMatch===true};
@@ -45,7 +68,10 @@ async function getSubtitles({type,id,extra={},config=''}) {
     // A stable per-series/language ID lets clients that remember a track match it
     // in the next episode. The URL itself remains episode-specific.
     const trackId = type === 'series' ? parts[0] : id;
-    outputs.push({id:`subflow-${language}-${trackId}`,url:`/subtitle/${token}/${season}/${episode}.vtt`,lang,label});
+    const suffix = index === 0 ? '' : `-opcao${index + 1}`;
+    outputs.push({id:`subflow-${language}-${trackId}${suffix}`,url:`/subtitle/${token}/${season}/${episode}.vtt`,lang,
+      label: groups.length > 1 ? `${label} • Opção ${index + 1}` : label});
+    });
   }
   // The player applies its preferred-language setting; both choices remain available.
   if(settings.enableEnglish) add('eng','eng','SubFlow • Inglês');
@@ -97,4 +123,4 @@ async function resolveAndDownloadSubtitle(token) {
   inFlight.set(cacheKey,task);
   try { return await task; } finally { if(inFlight.get(cacheKey)===task) inFlight.delete(cacheKey); }
 }
-module.exports={getSubtitles,resolveAndDownloadSubtitle,parseUserConfig,rankCandidates};
+module.exports={getSubtitles,resolveAndDownloadSubtitle,parseUserConfig,rankCandidates,groupCandidateReleases};

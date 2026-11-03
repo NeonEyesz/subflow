@@ -1,7 +1,7 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
 const {allowedDownloadUrl,normalizeCandidate}=require('../src/services/opensubtitles');
-const {rankCandidates,resolveAndDownloadSubtitle}=require('../src/services/subtitles');
+const {rankCandidates,resolveAndDownloadSubtitle,groupCandidateReleases}=require('../src/services/subtitles');
 const {srtToVtt,bufferToUtf8}=require('../src/utils/converter');
 const axios=require('axios');
 
@@ -19,6 +19,43 @@ test('hash match and matching release outrank generic and forced tracks',()=>{
  const a=[{releaseName:'Film.WEB-DL-AMZN',fromHashMatch:false},{releaseName:'Film.BluRay-RARBG',fromHashMatch:false},{releaseName:'Film.BluRay-RARBG forced',isForced:true},{releaseName:'unrelated',fromHashMatch:true}];
  const order=rankCandidates(a,{filename:'Film.BluRay.RARBG.mkv'});
  assert.equal(order[0].releaseName,'unrelated');assert.equal(order[1].releaseName,'Film.BluRay-RARBG');assert.equal(order[3].isForced,true);
+});
+test('different release editions remain separate while duplicate names are grouped',()=>{
+ const releases=[
+  {releaseName:'Show.S02E02.HDTV.XviD-ASAP.srt',downloadUrl:'https://subs5.strem.io/file/1'},
+  {releaseName:'Show.S02E02.HDTV.XviD-ASAP - HI.srt',downloadUrl:'https://subs5.strem.io/file/2'},
+  {releaseName:'pfa-show.s02e02.srt',downloadUrl:'https://subs5.strem.io/file/3'},
+  {releaseName:'Show.S02E02.WEB-DL.srt',downloadUrl:'https://subs5.strem.io/file/4'},
+ ];
+ const groups=groupCandidateReleases(releases,{});
+ assert.deepEqual(groups.map(g=>g.map(c=>c.downloadUrl)),[
+  [releases[0].downloadUrl,releases[1].downloadUrl],[releases[2].downloadUrl],[releases[3].downloadUrl]
+ ]);
+});
+test('commentary and forced tracks are not mixed with normal subtitle options',()=>{
+ const releases=[
+  {releaseName:'Film.Commentary.srt',downloadUrl:'https://subs5.strem.io/file/1'},
+  {releaseName:'Film.Forced.srt',downloadUrl:'https://subs5.strem.io/file/2',isForced:true},
+  {releaseName:'Film.Normal.srt',downloadUrl:'https://subs5.strem.io/file/3'}
+ ];
+ assert.deepEqual(groupCandidateReleases(releases,{}).map(g=>g[0].downloadUrl),[releases[2].downloadUrl]);
+});
+test('alternative tracks use separate candidates instead of silently racing different editions',async()=>{
+ const old=axios.get;
+ axios.get=async ()=>({data:{subtitles:[
+  {lang:'eng',subtitleFileName:'Show.S02E02.HDTV.ASAP.srt',url:'https://subs5.strem.io/file/a'},
+  {lang:'eng',subtitleFileName:'Show.S02E02.HDTV.ASAP-HI.srt',url:'https://subs5.strem.io/file/b'},
+  {lang:'eng',subtitleFileName:'Show.S02E02.WEB-DL.srt',url:'https://subs5.strem.io/file/c'}
+ ]}});
+ try {
+  const {getSubtitles}=require('../src/services/subtitles');
+  const result=await getSubtitles({type:'series',id:'tt99999993:2:2'});
+  assert.equal(result.length,2);
+  const payload=s=>JSON.parse(Buffer.from(s.url.split('/')[2],'base64url').toString());
+  assert.deepEqual(payload(result[0]).u,['https://subs5.strem.io/file/a','https://subs5.strem.io/file/b']);
+  assert.deepEqual(payload(result[1]).u,['https://subs5.strem.io/file/c']);
+  assert.notEqual(result[0].id,result[1].id);
+ } finally {axios.get=old;}
 });
 test('converter keeps short numeric dialogue, markup and UTF-8',()=>{
  const s='1\r\n00:00:01,000 --> 00:00:02,500\r\n2024\r\n\r\n2\r\n00:00:03,000 --> 00:00:04,000\r\n<u>Olá!</u>\r\n\r\n';
