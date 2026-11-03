@@ -2,105 +2,84 @@ const axios = require('axios');
 const zlib = require('zlib');
 const { bufferToUtf8, srtToVtt } = require('../utils/converter');
 
-const OPENSUBTITLES_PLUS_BASE = 'https://opensubtitles.stremio.homes/pt-br|pt-pt|en/ai-translated=true|from=all|auto-adjustment=false';
-const OPENSUBTITLES_FALLBACK_BASE = 'https://opensubtitles-v3.strem.io';
-const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const PLUS = 'https://opensubtitles.stremio.homes/pt-br|pt-pt|en/ai-translated=true|from=all|auto-adjustment=false';
+const OFFICIAL = 'https://opensubtitles-v3.strem.io';
+const USER_AGENT = 'SubFlow/1.3 (+https://subflow-3qa3.onrender.com)';
+const TTL_MS = 5 * 60 * 1000;
+const searches = new Map();
 
-/**
- * Busca legendas no catálogo completo OpenSubtitles v3+ (com nomes reais de release)
- */
-async function searchOpenSubtitlesV3Plus({ type, id, extra = {} }) {
-  const queryParts = [];
-  if (extra.videoHash) queryParts.push(`videoHash=${encodeURIComponent(extra.videoHash)}`);
-  if (extra.videoSize) queryParts.push(`videoSize=${encodeURIComponent(extra.videoSize)}`);
-  if (extra.filename) queryParts.push(`filename=${encodeURIComponent(extra.filename)}`);
-
-  const extraQuery = queryParts.length > 0 ? `/${queryParts.join('&')}` : '';
-
-  const urlsToTry = [
-    // 1. Busca com filename/hash no OpenSubtitles v3+
-    extraQuery ? `${OPENSUBTITLES_PLUS_BASE}/subtitles/${type}/${id}${extraQuery}.json` : null,
-    // 2. Busca padrão no OpenSubtitles v3+
-    `${OPENSUBTITLES_PLUS_BASE}/subtitles/${type}/${id}.json`,
-    // 3. Fallback de emergência no endpoint oficial do Stremio
-    extraQuery ? `${OPENSUBTITLES_FALLBACK_BASE}/subtitles/${type}/${id}${extraQuery}.json` : null,
-    `${OPENSUBTITLES_FALLBACK_BASE}/subtitles/${type}/${id}.json`
-  ].filter(Boolean);
-
-  for (const url of urlsToTry) {
-    try {
-      const response = await axios.get(url, {
-        timeout: 7000,
-        headers: { 'User-Agent': USER_AGENT }
-      });
-
-      if (response.data && Array.isArray(response.data.subtitles) && response.data.subtitles.length > 0) {
-        return response.data.subtitles.map(sub => {
-          const langCode = (sub.lang_code || sub.lang || '').toLowerCase();
-          let normalizedLang = 'por';
-          if (langCode === 'pt-br' || langCode === 'pob' || langCode === 'pb') {
-            normalizedLang = 'pob';
-          } else if (langCode === 'en' || langCode === 'eng') {
-            normalizedLang = 'eng';
-          }
-
-          const releaseTitle = sub.title || extra.filename || `OpenSubtitles-${sub.id || sub.sub_id}`;
-          const isForced = (releaseTitle.toLowerCase().includes('forced')) || (releaseTitle.toLowerCase().includes('forçada'));
-
-          return {
-            sourceKey: 'opensubtitlesv3plus',
-            providerId: sub.id || sub.sub_id,
-            subId: sub.sub_id || sub.id,
-            downloadUrl: sub.url,
-            releaseName: releaseTitle,
-            language: normalizedLang,
-            isPtBr: normalizedLang === 'pob',
-            isEnglish: normalizedLang === 'eng',
-            isForced: isForced,
-            fromHashMatch: !!sub.moviehash || (sub.m === 'h'),
-            aiTranslated: !!sub.ai_translated
-          };
-        });
-      }
-    } catch (err) {
-      // Tenta a próxima URL da lista
-    }
-  }
-
-  return [];
-}
-
-/**
- * Baixa e normaliza a legenda em WebVTT limpo
- */
-async function downloadSubtitle(candidate, cleanAds = true) {
-  if (!candidate.downloadUrl) {
-    throw new Error('Nenhum link de download disponível para esta legenda');
-  }
-
+function allowedDownloadUrl(raw) {
   try {
-    const fileRes = await axios.get(candidate.downloadUrl, {
-      responseType: 'arraybuffer',
-      timeout: 10000,
-      headers: { 'User-Agent': USER_AGENT }
-    });
-
-    let buffer = Buffer.from(fileRes.data);
-
-    // Se for arquivo gzip comprimido
-    if (buffer.length > 2 && buffer[0] === 0x1f && buffer[1] === 0x8b) {
-      buffer = zlib.gunzipSync(buffer);
-    }
-
-    const utf8Content = bufferToUtf8(buffer);
-    return srtToVtt(utf8Content, cleanAds);
-  } catch (err) {
-    console.error(`[SubFlow] Falha ao baixar legenda ${candidate.releaseName || candidate.providerId}:`, err.message);
-    throw err;
-  }
+    const u = new URL(raw);
+    return u.protocol === 'https:' && !u.username && !u.password && !u.port &&
+      (u.hostname === 'opensubtitles.stremio.homes' || /^subs\d*\.strem\.io$/.test(u.hostname));
+  } catch { return false; }
 }
 
-module.exports = {
-  searchOpenSubtitlesV3Plus,
-  downloadSubtitle
-};
+function normalizeCandidate(sub, source) {
+  const code = String(sub.lang_code || sub.lang || '').toLowerCase();
+  const language = ['pt-br', 'pob', 'pb'].includes(code) ? 'pob' :
+    ['en', 'eng'].includes(code) ? 'eng' :
+    ['pt', 'pt-pt', 'por'].includes(code) ? 'por' : null;
+  if (!language || !allowedDownloadUrl(sub.url)) return null;
+  const releaseName = String(sub.title || sub.subtitleFileName || sub.movieReleaseName || '');
+  return {
+    sourceKey: source,
+    providerId: String(sub.sub_id || sub.id || ''),
+    downloadUrl: sub.url,
+    releaseName,
+    language,
+    isPtBr: language === 'pob',
+    isForced: /\bforced\b|forçada/i.test(releaseName),
+    fromHashMatch: sub.m === 'h' || sub.hash_match === true,
+    aiTranslated: sub.ai_translated === true
+  };
+}
+
+async function searchOpenSubtitlesV3Plus({ type, id, extra = {} }) {
+  const params = [];
+  if (extra.videoHash) params.push(`videoHash=${encodeURIComponent(extra.videoHash)}`);
+  if (extra.videoSize) params.push(`videoSize=${encodeURIComponent(extra.videoSize)}`);
+  if (extra.filename) params.push(`filename=${encodeURIComponent(extra.filename)}`);
+  const suffix = params.length ? `/${params.join('&')}` : '';
+  const safeType = encodeURIComponent(type);
+  const safeId = encodeURIComponent(id);
+  const key = JSON.stringify([type,id,extra.videoHash,extra.videoSize,extra.filename]);
+  const cached = searches.get(key);
+  if (cached && cached.expires > Date.now()) return cached.value;
+  const ask = async (base, source, withExtra) => {
+    try {
+      const url = `${base}/subtitles/${safeType}/${safeId}${withExtra ? suffix : ''}.json`;
+      const response = await axios.get(url, { timeout: 3500, headers: { 'User-Agent': USER_AGENT } });
+      return (Array.isArray(response.data?.subtitles) ? response.data.subtitles : [])
+        .map(s => normalizeCandidate(s, source)).filter(Boolean);
+    } catch { return []; }
+  };
+  // Both sources race in parallel; the enhanced source is allowed a limited time.
+  const [enhanced, official] = await Promise.all([ask(PLUS,'v3plus',true), ask(OFFICIAL,'stremio',true)]);
+  let results = [...enhanced, ...official];
+  // Some servers reject the optional parameters: retry the simple official route.
+  if (!results.length && suffix) results = await ask(OFFICIAL,'stremio',false);
+  const seen = new Set();
+  results = results.filter(c => !seen.has(c.downloadUrl) && seen.add(c.downloadUrl));
+  if (results.length) {
+    if (searches.size >= 200) searches.delete(searches.keys().next().value);
+    searches.set(key, { value: results, expires: Date.now() + TTL_MS });
+  }
+  return results;
+}
+
+async function downloadSubtitle(candidate, cleanAds = true, signal) {
+  if (!allowedDownloadUrl(candidate.downloadUrl)) throw new Error('Endereço da legenda não permitido');
+  const result = await axios.get(candidate.downloadUrl, {
+    responseType: 'arraybuffer', timeout: 4500, maxRedirects: 0,
+    maxContentLength: 4 * 1024 * 1024, signal, headers: { 'User-Agent': USER_AGENT }
+  });
+  let buffer = Buffer.from(result.data);
+  if (buffer.length > 2 && buffer[0] === 0x1f && buffer[1] === 0x8b) buffer = zlib.gunzipSync(buffer, { maxOutputLength: 4 * 1024 * 1024 });
+  const vtt = srtToVtt(bufferToUtf8(buffer), cleanAds);
+  if (!/\d{2}:\d{2}[:.]\d{2}\.\d{3}\s*-->/.test(vtt)) throw new Error('A fonte não retornou falas válidas');
+  return vtt;
+}
+
+module.exports = { searchOpenSubtitlesV3Plus, downloadSubtitle, allowedDownloadUrl, normalizeCandidate };

@@ -1,261 +1,100 @@
-const { searchOpenSubtitlesV3Plus, downloadSubtitle } = require('./opensubtitles');
+const crypto = require('crypto');
+const { searchOpenSubtitlesV3Plus, downloadSubtitle, allowedDownloadUrl } = require('./opensubtitles');
 const cache = require('../utils/cache');
+const inFlight = new Map();
 
-/**
- * Normaliza e pontua a similaridade entre o nome do arquivo do vídeo e o título da legenda.
- */
-function calculateReleaseMatchScore(candidateRelease, targetFilename) {
-  if (!candidateRelease || !targetFilename) return 0;
-
-  const tokenize = str => str.toLowerCase()
-    .replace(/[\[\]\(\)\._-]/g, ' ')
-    .replace(/\b(1080p|720p|2160p|4k|hdr|bluray|web-dl|webrip|web|hdtv|x264|x265|hevc|aac|dts)\b/g, ' $1 ')
-    .split(/\s+/)
-    .filter(Boolean);
-
-  const targetTokens = new Set(tokenize(targetFilename));
-  const candidateTokens = tokenize(candidateRelease);
-
-  let score = 0;
-  for (const token of candidateTokens) {
-    if (targetTokens.has(token)) {
-      if (['web-dl', 'webrip', 'bluray', 'hdtv', 'remux', 'atvp', 'amzn', 'nf', 'dsnp', 'hbo', 'flux', 'ntb', 'yts', 'rarbg', 'psa', 'fgt', 'reward', 'ctrlhd', 'pia', 'zicamanhd'].includes(token)) {
-        score += 200;
-      } else if (['2160p', '1080p', '720p', '4k', 'hdr', 'x264', 'x265', 'hevc'].includes(token)) {
-        score += 100;
-      } else {
-        score += 30;
-      }
-    }
-  }
-
-  return score;
+function tokens(s) {
+  return String(s || '').toLowerCase().replace(/web[. _-]?dl/g,'webdl').replace(/blu[. _-]?ray/g,'bluray')
+    .replace(/[^a-z0-9]+/g,' ').split(/\s+/).filter(Boolean);
 }
-
-/**
- * Classifica e ordena os candidatos de legenda por exatidão de sincronismo
- */
-function rankCandidates(candidates, { filename }) {
-  return candidates.map(candidate => {
-    let score = 0;
-
-    // 1. Hash exato
-    if (candidate.fromHashMatch) {
-      score += 10000;
+function rankCandidates(candidates, {filename}) {
+  const target = new Set(tokens(filename));
+  const cues = ['webdl','webrip','bluray','hdtv','remux','amzn','nf','dsnp','hmax','atvp','flux','ntb','rarbg','yts'];
+  return candidates.map((c,index) => {
+    const parts = new Set(tokens(c.releaseName));
+    let score = c.fromHashMatch ? 10000 : 0;
+    for (const t of cues) {
+      if (target.has(t) && parts.has(t)) score += 180;
+      else if (target.has(t) && ['webdl','webrip','bluray','hdtv'].includes(t) &&
+        cues.some(other => other!==t && ['webdl','webrip','bluray','hdtv'].includes(other) && parts.has(other))) score -= 160;
     }
-
-    // 2. Pontuação por compatibilidade com o arquivo de vídeo do usuário
-    if (filename && candidate.releaseName) {
-      score += calculateReleaseMatchScore(candidate.releaseName, filename);
-    }
-
-    // 3. PT-BR confirmado
-    if (candidate.isPtBr) {
-      score += 500;
-    }
-
-    // 4. Penaliza traduções puramente por IA se houver legendas humanas
-    if (candidate.aiTranslated) {
-      score -= 50;
-    }
-
-    return {
-      ...candidate,
-      rankingScore: score
-    };
-  }).sort((a, b) => b.rankingScore - a.rankingScore);
+    for (const t of ['2160p','1080p','720p','x264','x265','hevc']) if (target.has(t) && parts.has(t)) score += 20;
+    if (c.isForced) score -= 2500;
+    if (/\bcd[ ._-]?[12]\b/i.test(c.releaseName) && !/\bcd[ ._-]?[12]\b/i.test(filename || '')) score -= 1000;
+    if (c.aiTranslated) score -= 30;
+    return {...c, rankingScore: score, originalIndex: index};
+  }).sort((a,b)=>b.rankingScore-a.rankingScore || a.originalIndex-b.originalIndex);
 }
-
-/**
- * Decodifica configurações do usuário a partir da URL
- */
 function parseUserConfig(configStr) {
-  const defaults = {
-    enablePtBr: true,
-    enableEnglish: true,
-    fallbackPtPt: true,
-    cleanAds: true
-  };
-
-  if (!configStr) return defaults;
-
-  try {
-    const params = new URLSearchParams(configStr);
-    return {
-      enablePtBr: params.get('ptbr') !== '0',
-      enableEnglish: params.get('eng') !== '0',
-      fallbackPtPt: params.get('ptpt') !== '0',
-      cleanAds: params.get('ads') !== '0'
-    };
-  } catch (err) {
-    return defaults;
-  }
+  const p = new URLSearchParams(configStr || '');
+  return {enablePtBr:p.get('ptbr')!=='0', enableEnglish:p.get('eng')!=='0', fallbackPtPt:p.get('ptpt')!=='0', cleanAds:p.get('ads')!=='0'};
 }
-
-/**
- * Busca e seleciona as melhores legendas gerando tokens compactos
- */
-async function getSubtitles({ type, id, extra = {}, config = '' }) {
-  let imdbId = id;
-  let season = null;
-  let episode = null;
-
-  if (id.includes(':')) {
-    const parts = id.split(':');
-    imdbId = parts[0];
-    season = parseInt(parts[1], 10);
-    episode = parseInt(parts[2], 10);
+async function getSubtitles({type,id,extra={},config=''}) {
+  if (!['movie','series'].includes(type) || !/^tt\d+(?::\d+:\d+)?$/.test(id)) return [];
+  const settings = parseUserConfig(config);
+  const all = await searchOpenSubtitlesV3Plus({type,id,extra});
+  const parts = id.split(':'); const season = parts[1] || '0', episode = parts[2] || '0';
+  const outputs = [];
+  function add(language, lang, label) {
+    const ranked = rankCandidates(all.filter(c=>c.language===language),extra).slice(0,5);
+    if (!ranked.length) return;
+    const urls=ranked.map(c=>c.downloadUrl);
+    const k=crypto.createHash('sha256').update(JSON.stringify([id,language,extra.videoHash||'',extra.filename||'',settings.cleanAds,urls])).digest('hex');
+    const payload={v:2,u:urls,k,a:settings.cleanAds,h:ranked[0].fromHashMatch===true};
+    const token=Buffer.from(JSON.stringify(payload)).toString('base64url');
+    // A stable per-series/language ID lets clients that remember a track match it
+    // in the next episode. The URL itself remains episode-specific.
+    const trackId = type === 'series' ? parts[0] : id;
+    outputs.push({id:`subflow-${language}-${trackId}`,url:`/subtitle/${token}/${season}/${episode}.vtt`,lang,label});
   }
-
-  const userConfig = parseUserConfig(config);
-
-  const queryParams = {
-    type,
-    id,
-    imdbId,
-    season,
-    episode,
-    videoHash: extra.videoHash,
-    videoSize: extra.videoSize,
-    filename: extra.filename,
-    extra
-  };
-
-  const allCandidates = await searchOpenSubtitlesV3Plus(queryParams);
-
-  if (allCandidates.length === 0) {
-    return [];
+  // The player applies its preferred-language setting; both choices remain available.
+  if(settings.enableEnglish) add('eng','eng','SubFlow • Inglês');
+  if(settings.enablePtBr) {
+    if(all.some(c=>c.language==='pob')) add('pob','pob','SubFlow • Português (Brasil)');
+    else if(settings.fallbackPtPt) add('por','por','SubFlow • Português (Portugal)');
   }
-
-  const seasonParam = season !== null ? season : 0;
-  const episodeParam = episode !== null ? episode : 0;
-  const results = [];
-
-  // 1. Faixa PT-BR
-  if (userConfig.enablePtBr) {
-    let ptCandidates = allCandidates.filter(c => c.language === 'pob');
-
-    let isFallback = false;
-    let targetLangCode = 'pt-br';
-
-    if (ptCandidates.length === 0 && userConfig.fallbackPtPt) {
-      ptCandidates = allCandidates.filter(c => c.language === 'por');
-      isFallback = ptCandidates.length > 0;
-      targetLangCode = 'pt-pt';
-    }
-
-    if (ptCandidates.length > 0) {
-      const rankedPt = rankCandidates(ptCandidates, queryParams).slice(0, 6);
-      
-      // Token compacto: apenas sub_id e nome resumido para não estourar limite de URL em Smart TVs/Nuvio
-      const compactPayload = {
-        c: rankedPt.map(c => [c.subId || c.providerId, (c.releaseName || '').substring(0, 50)]),
-        k: `subflow-pt-${id}-${extra.videoHash || extra.filename || 'default'}`,
-        l: targetLangCode,
-        a: userConfig.cleanAds
-      };
-
-      const ptToken = Buffer.from(JSON.stringify(compactPayload)).toString('base64url');
-      results.push({
-        id: `subflow-pt-${id}`,
-        url: `/subtitle/${ptToken}/${seasonParam}/${episodeParam}.vtt`,
-        lang: 'pob',
-        label: isFallback ? 'SubFlow [Português - Fallback]' : 'SubFlow [PT-BR Automático]'
-      });
-    }
-  }
-
-  // 2. Faixa Inglês
-  if (userConfig.enableEnglish) {
-    const enCandidates = allCandidates.filter(c => c.language === 'eng');
-    if (enCandidates.length > 0) {
-      const rankedEn = rankCandidates(enCandidates, queryParams).slice(0, 6);
-
-      const compactPayload = {
-        c: rankedEn.map(c => [c.subId || c.providerId, (c.releaseName || '').substring(0, 50)]),
-        k: `subflow-en-${id}-${extra.videoHash || extra.filename || 'default'}`,
-        l: 'en',
-        a: userConfig.cleanAds
-      };
-
-      const enToken = Buffer.from(JSON.stringify(compactPayload)).toString('base64url');
-      results.push({
-        id: `subflow-en-${id}`,
-        url: `/subtitle/${enToken}/${seasonParam}/${episodeParam}.vtt`,
-        lang: 'eng',
-        label: 'SubFlow [English Sync]'
-      });
-    }
-  }
-
-  return results;
+  return outputs;
 }
-
-/**
- * Baixa a legenda do melhor candidato com fallback automático
- */
 async function resolveAndDownloadSubtitle(token) {
-  let payload;
-  try {
-    const jsonStr = Buffer.from(token, 'base64url').toString('utf-8');
-    payload = JSON.parse(jsonStr);
-  } catch (err) {
-    // Tenta fallback com base64 padrão
+  if(typeof token!=='string' || token.length>16000 || !/^[\w-]+$/.test(token)) throw new Error('Token inválido');
+  let payload; try { payload=JSON.parse(Buffer.from(token,'base64url').toString('utf8')); } catch { throw new Error('Token inválido'); }
+  // Existing Nuvio preferences may still point at the old compact token format.
+  // Re-resolve its IDs from trusted providers rather than fabricating a URL.
+  if(payload.v!==2 && Array.isArray(payload.c) && typeof payload.k==='string') {
+    const match=payload.k.match(/^subflow-(en|pt)-(tt\d+(?::\d+:\d+)?)-(.+)$/);
+    if(!match || payload.c.length>6) throw new Error('Token antigo inválido');
+    const [,language,id,release]=match;
+    const extra=release==='default'?{}:{filename:release};
+    const found=await searchOpenSubtitlesV3Plus({type:id.includes(':')?'series':'movie',id,extra});
+    const requested=new Map(payload.c.map((entry,index)=>[String(entry[0]),index]));
+    const relevant=found.filter(c=>requested.has(String(c.providerId)) && (language==='en'?c.language==='eng':['pob','por'].includes(c.language)));
+    relevant.sort((a,b)=>requested.get(String(a.providerId))-requested.get(String(b.providerId)));
+    if(!relevant.length) throw new Error('Legenda antiga indisponível; selecione novamente');
+    payload={v:2,u:relevant.slice(0,5).map(c=>c.downloadUrl),a:payload.a===true};
+  }
+  if(payload.v!==2 || !Array.isArray(payload.u) || payload.u.length<1 || payload.u.length>5 || payload.u.some(u=>!allowedDownloadUrl(u))) throw new Error('Candidatos inválidos');
+  // Derive the cache key from validated contents: a token cannot choose another entry.
+  const cacheKey='v2-'+crypto.createHash('sha256').update(JSON.stringify([payload.u,payload.a===true])).digest('hex');
+  const existing=cache.get(cacheKey); if(existing) return existing;
+  if(inFlight.has(cacheKey)) return inFlight.get(cacheKey);
+  const task = (async()=>{
+    const controller=new AbortController();
+    const timers=[];
+    const attempts=payload.u.map((url,index)=>new Promise((resolve,reject)=>{
+      // Preserve the most reliable choice for a little longer when it has a hash match.
+      const delay=index===0?0:(payload.h===true?2500:1000)+(index-1)*700;
+      const timer=setTimeout(async()=>{
+        try { resolve(await downloadSubtitle({downloadUrl:url},payload.a===true,controller.signal)); }
+        catch(err) { reject(err); }
+      },delay);
+      timers.push(timer);
+    }));
     try {
-      const jsonStr = Buffer.from(token, 'base64').toString('utf-8');
-      payload = JSON.parse(jsonStr);
-    } catch (e) {
-      throw new Error('Token de legenda inválido');
-    }
-  }
-
-  const { c: candidatesList, k: cacheKey, l: langCode = 'pt-br', a: cleanAds = true } = payload;
-
-  if (cacheKey && cache.has(cacheKey)) {
-    const cachedVtt = cache.get(cacheKey);
-    if (cachedVtt) {
-      console.log(`[Cache Hit] Legenda servida do cache: ${cacheKey}`);
-      return cachedVtt;
-    }
-  }
-
-  if (!candidatesList || candidatesList.length === 0) {
-    throw new Error('Nenhum candidato de legenda disponível');
-  }
-
-  let lastError = null;
-
-  for (let i = 0; i < candidatesList.length; i++) {
-    const [subId, releaseName] = candidatesList[i];
-    console.log(`[SubFlow] Tentando baixar candidato #${i + 1}: ID ${subId} (${releaseName})`);
-
-    const candidate = {
-      downloadUrl: `https://opensubtitles.stremio.homes/sub.vtt/?lang_code=${langCode}&sub_id=${subId}`,
-      releaseName: releaseName,
-      providerId: subId
-    };
-
-    try {
-      const vttContent = await downloadSubtitle(candidate, cleanAds);
-
-      if (vttContent && vttContent.includes('WEBVTT')) {
-        console.log(`[SubFlow] Sucesso no candidato #${i + 1} (${releaseName})! Gravando em cache...`);
-        if (cacheKey) {
-          cache.set(cacheKey, vttContent);
-        }
-        return vttContent;
-      }
-    } catch (err) {
-      console.warn(`[SubFlow] Falha no candidato #${i + 1}: ${err.message}. Tentando próximo...`);
-      lastError = err;
-    }
-  }
-
-  throw new Error(`Todos os ${candidatesList.length} candidatos falharam: ${lastError ? lastError.message : 'desconhecido'}`);
+      const vtt=await Promise.any(attempts); cache.set(cacheKey,vtt); return vtt;
+    } catch { throw new Error('Nenhuma legenda pôde ser carregada'); }
+    finally { controller.abort(); timers.forEach(clearTimeout); }
+  })();
+  inFlight.set(cacheKey,task);
+  try { return await task; } finally { if(inFlight.get(cacheKey)===task) inFlight.delete(cacheKey); }
 }
-
-module.exports = {
-  getSubtitles,
-  resolveAndDownloadSubtitle,
-  parseUserConfig
-};
+module.exports={getSubtitles,resolveAndDownloadSubtitle,parseUserConfig,rankCandidates};

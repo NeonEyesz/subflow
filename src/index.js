@@ -13,9 +13,9 @@ app.use(express.json());
 
 const BASE_MANIFEST = {
   id: 'com.azthe.subflow',
-  version: '1.2.0',
+  version: '1.3.0',
   name: 'SubFlow',
-  description: 'Legendas inteligentes PT-BR & Inglês para Stremio e Nuvio com seleção por VideoHash, anti-anúncios, cache duplo e fallback.',
+  description: 'Legendas em inglês e português com prioridade por correspondência e fontes alternativas.',
   logo: 'https://raw.githubusercontent.com/Stremio/stremio-addon-sdk/master/logo.png',
   resources: ['subtitles'],
   types: ['movie', 'series'],
@@ -91,7 +91,7 @@ app.get(['/', '/configure'], (req, res) => {
       <div class="card">
         <div class="logo-badge">🌊</div>
         <h1>SubFlow</h1>
-        <p class="subtitle">Legendas inteligentes em Português (Brasil) e Inglês com sincronização perfeita, anti-anúncios, cache duplo e fallback contínuo.</p>
+        <p class="subtitle">Legendas em inglês e português. A escolha automática do idioma é feita nas configurações do player.</p>
 
         <div class="config-box">
           <div class="config-title">⚙️ Preferências de Legenda</div>
@@ -99,7 +99,7 @@ app.get(['/', '/configure'], (req, res) => {
           <div class="toggle-item">
             <div>
               <div class="toggle-label">🇧🇷 Legendas em Português (PT-BR)</div>
-              <div class="toggle-desc">Prioridade automática para Português do Brasil</div>
+              <div class="toggle-desc">Disponibiliza a opção em português brasileiro</div>
             </div>
             <label class="switch"><input type="checkbox" id="cfgPtbr" checked onchange="updateLinks()"><span class="slider"></span></label>
           </div>
@@ -107,7 +107,7 @@ app.get(['/', '/configure'], (req, res) => {
           <div class="toggle-item">
             <div>
               <div class="toggle-label">🇺🇸 Legendas em Inglês (English Sync)</div>
-              <div class="toggle-desc">Entrega a faixa em inglês sincronizada no player</div>
+              <div class="toggle-desc">Disponibiliza a opção em inglês no player</div>
             </div>
             <label class="switch"><input type="checkbox" id="cfgEng" checked onchange="updateLinks()"><span class="slider"></span></label>
           </div>
@@ -261,7 +261,7 @@ app.get('/stats', (req, res) => {
   res.json({
     status: 'ok',
     addon: 'SubFlow',
-    version: '1.2.0',
+    version: '1.3.0',
     uptime: process.uptime(),
     cache: cache.getStats()
   });

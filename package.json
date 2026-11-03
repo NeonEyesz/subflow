@@ -1,10 +1,12 @@
 {
   "name": "subflow-stremio",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "SubFlow - Legendas inteligentes PT-BR & Inglês para Stremio e Nuvio com seleção por VideoHash, anti-anúncios e cache duplo.",
   "main": "src/index.js",
+  "engines": { "node": ">=18" },
   "scripts": {
     "start": "node src/index.js",
+    "test": "node --test tests/subflow.test.js",
     "dev": "node --watch src/index.js"
   },
   "keywords": [
